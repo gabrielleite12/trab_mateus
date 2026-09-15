@@ -84,8 +84,13 @@
         </section>
 
         <section class="box" id="tasks" style="display:none">
-            <div class="box-h">PASSO 3: ESCOLHA SUA TAREFA</div>
+            <div class="box-h">PASSO 3: ESCOLHA SUAS TAREFAS (Até 5)</div>
             <div class="tasks" id="task-grid"></div>
+            <div id="task-submit-box" style="margin-top:20px; display:none; text-align:center;">
+                <div style="margin-bottom:15px; color:var(--cyan); font-size:1.1rem; background:rgba(0, 255, 255, 0.1); padding: 10px; border-radius: 6px;">Custo: <b id="t-sum-ram">0</b> MB / <b id="t-sum-cpu">0</b>% CPU</div>
+                <button class="cmp-btn" style="border-color:var(--cyan); background:rgba(0,255,255,0.1); color:var(--cyan); font-size:1.2rem; font-weight:bold; padding: 15px 20px; width: 100%;" onclick="submitTasks()">🚀 EXECUTAR TAREFAS</button>
+                <button class="cmp-btn" style="border-color:var(--muted); color:var(--muted); font-size:0.9rem; margin-top:10px; padding: 10px; width: 100%;" onclick="clearTasks()">Limpar Seleção</button>
+            </div>
         </section>
 
         <section class="box" id="card" style="display:none">
@@ -97,9 +102,9 @@
             <div class="tline" id="t-disk" style="display:none"></div>
             <div class="tline dim" id="t-note"></div>
             <div class="tline" id="t-hb" style="margin-top:10px; font-weight:bold; color:var(--cyan)">💓 Heartbeat: <span id="hb-status">ativo</span></div>
-            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
-                <button class="cmp-btn" id="b-cmp" style="flex: 1;">🔁 e se eu estivesse no OUTRO ambiente?</button>
-                <button class="cmp-btn" id="b-term" style="border-color: var(--green); color: var(--green); flex: 1;">💻 ABRIR TERMINAL</button>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px;">
+                <button class="cmp-btn" id="b-cmp" style="flex: 1; min-width: 140px; padding: 12px; font-size: 0.95rem;">🔁 e no OUTRO ambiente?</button>
+                <button class="cmp-btn" id="b-term" style="border-color: var(--green); background: rgba(16, 185, 129, 0.1); color: var(--green); flex: 1; min-width: 140px; padding: 12px; font-size: 1rem; font-weight: bold;">💻 ABRIR TERMINAL</button>
             </div>
             <div class="cmp" id="cmp" style="display:none"></div>
             
@@ -123,7 +128,7 @@
                 <div style="color:var(--text); font-size:0.95rem; line-height: 1.6;">
                     <p><b>O QUE É?</b> Um "Cão de Guarda" (Watchdog) é um supervisor de segurança do SO.</p>
                     <p><b>O QUE ELE FAZ?</b> Fica esperando um "pulso" (Heartbeat) dos programas. Se o programa parar de pulsar, o cão "morde" (mata) para liberar memória.</p>
-                    <p><b>O QUE ACONTECEU AQUI?</b> Sua tarefa exigiu demais da CPU e travou. Sem pulso, o Watchdog te derrubou para salvar o servidor físico!</p>
+                    <p><b>O QUE ACONTECEU AQUI?</b> Suas tarefas exigiram demais da CPU e o processo travou (Freeze). Sem receber o pulso, o Watchdog atuou te derrubando para salvar o servidor físico de um travamento geral!</p>
                 </div>
             </div>
 
@@ -201,9 +206,12 @@
                     <span style="font-size: 0.9em; margin-top: auto; display: block; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">${t.ramMb} MB · ${t.cpu}% CPU</span>
                 </button>`).join('');
             document.querySelectorAll('.task-btn').forEach(b => b.onclick = () => {
-                myTasks = [b.dataset.t];
+                if (myTasks.length >= 5) {
+                    alert('Limite atingido! Por favor, execute no máximo 5 tarefas simultâneas para simulação didática.');
+                    return;
+                }
+                myTasks.push(b.dataset.t);
                 renderTaskCounts();
-                submitTasks();
             });
         }
         function renderTaskCounts() {
@@ -220,7 +228,17 @@
                 tSum.textContent = `${sumRam} MB / ${sumCpu}% CPU`;
                 tSum.style.color = sumCpu >= 100 ? 'var(--magenta)' : 'var(--cyan)';
             }
+            if ($('task-submit-box')) {
+                $('task-submit-box').style.display = myTasks.length > 0 ? 'block' : 'none';
+                $('t-sum-ram').textContent = sumRam;
+                $('t-sum-cpu').textContent = sumCpu;
+                $('t-sum-cpu').style.color = sumCpu >= 100 ? 'var(--magenta)' : 'var(--cyan)';
+            }
         }
+        window.clearTasks = () => {
+            myTasks = [];
+            renderTaskCounts();
+        };
         window.submitTasks = () => {
             if (myTasks.length === 0) return;
             socket.emit('task', myTasks);

@@ -377,7 +377,15 @@ io.on('connection', socket => {
             if (currentAloc + (totalRamRequested / REAL_SCALE) > MAX_ALLOC_MB) {
                 log(`❌ Tarefa Recusada: Capacidade máxima da simulação estourou. (Máx ${MAX_ALLOC_MB}MB).`, 'warn');
                 c.tasks = [];
-                return socket.emit('aviso_personalizado', `O servidor principal já lotou! Memory Leak generalizado ou limite simulado atingido.`);
+                return socket.emit('aviso_personalizado', `
+                <div style="text-align: center; margin-bottom: 15px;">
+                    <div style="font-size: 3rem; margin-bottom: 10px;">💥</div>
+                    <h2 style="color: #ff3d81; margin: 0;">MEMÓRIA INSUFICIENTE</h2>
+                </div>
+                <p>O Servidor Físico não aguentou! A capacidade máxima da simulação (<b>${MAX_ALLOC_MB} MB</b>) estourou.</p>
+                <p><b>O que aconteceu?</b> Você e seus colegas abriram tantas tarefas e ambientes que consumiram toda a memória RAM disponível no provedor físico.</p>
+                <p><b>Lição:</b> A "Nuvem" não é mágica, é apenas o computador de outra pessoa. Todo ambiente virtual (VM ou Docker) compartilha de um limite físico inescapável (Capacity Planning).</p>
+                `);
             }
 
             c.state = 'COM_TAREFA';
@@ -389,7 +397,8 @@ io.on('connection', socket => {
             c.buffer = Buffer.alloc(realBytes); // Enche de zeros
             
             // 2. Alocar Disco Real
-            const filename = path.join(SANDBOX_DIR, `thread-${c.threadId}-${c.tasks.join('-')}.bin`);
+            const safeTaskName = c.tasks.slice(0, 3).join('-') + (c.tasks.length > 3 ? '-etc' : '');
+            const filename = path.join(SANDBOX_DIR, `thread-${c.threadId}-${safeTaskName}.bin`);
             c.sandboxFile = filename;
             try {
                 await fs.writeFile(filename, c.buffer); // Usa o buffer já alocado
