@@ -55,7 +55,7 @@ const TEXTS = {
 let threadSeq = 0, vmSeq = 0, ctrSeq = 0;
 const clients = new Map(); // socket.id -> { mode, os, threadId, machineId, tasks: [], state, lastHb, taskStartedAt, buffer, worker, sandboxFile, wdCd, name }
 const machines = new Map(); // id -> { id,type,os,threads:Set,vthreads,state,cd,bootAt,reason,sched:Map,owner,anomaly,anomalyCd,ramAllocated }
-const TOTAL_VM_RAM = 16384;
+const TOTAL_VM_RAM = 102400; // 100 GB simulados
 
 let ipCounterVM = 10, ipCounterCTR = 10;
 const newMachine = (id, type, os = 'lin', owner = null) => { 
@@ -329,7 +329,8 @@ io.on('connection', socket => {
             if (available < 512) {
                 return socket.emit('aviso_personalizado', `⚠️ Servidor Bare-Metal Lotado (100% dos ${TOTAL_VM_RAM}MB ocupados)! O hardware não aguenta subir essa máquina! Tente usar o Container (Docker) para ver como ele consegue alocar mais instâncias no mesmo hardware.`);
             }
-            let alloc = Math.floor(available * (0.4 + Math.random() * 0.2));
+            let alloc = Math.floor(512 + Math.random() * 11776); // Sorteia entre 512MB e ~12GB
+            alloc = Math.min(alloc, available);
             alloc = Math.max(512, alloc);
             
             c.mode = 'vm';
@@ -491,7 +492,9 @@ io.on('connection', socket => {
                 const usedVmRam = Array.from(machines.values()).filter(m => m.type === 'vm').reduce((sum, mx) => sum + (mx.ramAllocated || 0), 0);
                 const available = TOTAL_VM_RAM - usedVmRam;
                 if (available < 512) break;
-                let alloc = Math.max(512, Math.floor(available * 0.4));
+                let alloc = Math.floor(512 + Math.random() * 11776);
+                alloc = Math.min(alloc, available);
+                alloc = Math.max(512, alloc);
                 const os = Math.random() > 0.5 ? 'win' : 'lin';
                 const m = newMachine(`VM-V${String(++vmSeq).padStart(2, '0')}`, 'vm', os, presenterName); 
                 m.ramAllocated = alloc;
@@ -694,7 +697,9 @@ io.on('connection', socket => {
                 const usedVmRam = Array.from(machines.values()).filter(mx => mx.type === 'vm').reduce((sum, mx) => sum + (mx.ramAllocated || 0), 0);
                 const available = TOTAL_VM_RAM - usedVmRam;
                 if (available < 512) break;
-                let alloc = Math.max(512, Math.floor(available * 0.4));
+                let alloc = Math.floor(512 + Math.random() * 11776);
+                alloc = Math.min(alloc, available);
+                alloc = Math.max(512, alloc);
                 const os = Math.random() > 0.5 ? 'win' : 'lin';
                 const m = newMachine(`VM-V${String(++vmSeq).padStart(2, '0')}`, 'vm', os); 
                 m.ramAllocated = alloc;
