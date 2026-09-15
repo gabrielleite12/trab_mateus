@@ -1,0 +1,555 @@
+  1:  0 | // server.js — SO://VM-vs-DOCKER v4: threads com tarefas reais + mapa de memória
+  2:  0 | const express = require('express');
+  3:  0 | const http = require('http');
+  4:  0 | const path = require('path');
+  5:  0 | const os = require('os');
+  6:  0 | const { Server } = require('socket.io');
+  7:  0 | const fs = require('fs/promises');
+  8:  0 | const fsSync = require('fs');
+  9:  0 | const { Worker } = require('worker_threads');
+ 10:  0 | 
+ 11:  0 | const REAL_SCALE = parseInt(process.env.REAL_SCALE || '8', 10);
+ 12:  0 | const SANDBOX_DIR = path.join(__dirname, 'sandbox');
+ 13:  1 | if (!fsSync.existsSync(SANDBOX_DIR)) {
+ 14:  1 |     fsSync.mkdirSync(SANDBOX_DIR, { recursive: true });
+ 15:  0 | }
+ 16:  0 | 
+ 17:  0 | const app = express();
+ 18:  0 | const server = http.createServer(app);
+ 19:  0 | const io = new Server(server, { cors: { origin: '*' } });
+ 20:  0 | app.use(express.static(path.join(__dirname, 'public')));
+ 21:  0 | app.get('/painel', (_, r) => r.sendFile(path.join(__dirname, 'public', 'painel.html')));
+ 22:  0 | 
+ 23:  0 | /* tarefas com tamanhos reais de mercado e durações (segundos) */
+ 24:  1 | const TASKS = {
+ 25:  1 |     web: { name: 'servir página', icon: '🌐', ramMb: 32, cpu: 2, color: '#00e5ff', duration: 15, desc: 'E/S (Rede) Leve: responde rápido a clientes web.' },
+ 26:  1 |     calc: { name: 'calcular primos', icon: '🧮', ramMb: 16, cpu: 25, color: '#39ff88', duration: 20, desc: 'CPU Bound: prende o processador fazendo muita matemática.' },
+ 27:  1 |     video: { name: 'transcodar vídeo', icon: '🎬', ramMb: 256, cpu: 60, color: '#ff3d81', duration: 30, desc: 'Carga Extrema: muita RAM para frames e torra a CPU.' },
+ 28:  1 |     db: { name: 'consultar banco', icon: '🗄️', ramMb: 128, cpu: 10, color: '#ffb020', duration: 25, desc: 'RAM Bound: exige blocos de memória para cache de dados.' },
+ 29:  0 | };
+ 30:  0 | const OVERHEAD = { host: 8 };   // fatia de kernel compartilhado
+ 31:  1 | const OS_OVERHEAD = {
+ 32:  1 |     vm: { win: { ramMb: 1024, cpu: 15 }, lin: { ramMb: 256, cpu: 5 } },
+ 33:  1 |     ctr: { win: { ramMb: 128, cpu: 5 }, lin: { ramMb: 16, cpu: 1 } }
+ 34:  0 | };
+ 35:  0 | const BOOT = { vm: 8000, host: 1500, ctr: 1500 };   // ms
+ 36:  0 | const CORES = 4;
+ 37:  0 | const MAX_ALLOC_MB = parseInt(process.env.MAX_ALLOC_MB || '900', 10);
+ 38:  0 | const WD_DETECT = 5;
+ 39:  0 | 
+ 40:  1 | const TEXTS = {
+ 41:  1 |     CRASH_CTR: "💥 Falha injetada em {id} (thread #{tid}). O isolamento de processo conteve o dano: os containers vizinhos seguem rodando, porque cada um tem seus próprios namespaces. O container afetado parou de enviar heartbeats; o watchdog o resetará em 5s e o boot levará ~1,5s — não há SO convidado para carregar, apenas o processo reinicia sobre o kernel compartilhado.",
+ 42:  1 |     CRASH_VM_VICTIM: "⚠️ AVISO PERSONALIZADO: sua {id} caiu (falha no SO convidado). Você é a vítima da rodada. Seus vizinhos de outras VMs continuam rodando: cada VM tem kernel próprio e 500 MB de memória própria, então a falha não propaga. O watchdog rebootará sua VM em 5s; o boot leva ~8s porque recarrega um sistema operacional completo.",
+ 43:  1 |     CRASH_VM_NEIGHBOR_VM: "✅ Uma VM vizinha ({id}) caiu e você não sentiu nada: isolamento em nível de máquina. Seus 500 MB e seu kernel seguem intactos.",
+ 44:  1 |     CRASH_VM_NEIGHBOR_CTR: "👀 Uma VM do outro lado caiu. Nada muda para você: o seu domínio de falha é o kernel compartilhado — e ele continua saudável.",
+ 45:  1 |     KERNEL_PANIC: "☢️ KERNEL PANIC no host físico: o kernel que todos os containers compartilham parou. Como o domínio de falha aqui é o próprio kernel, todos os containers caem simultaneamente — este é o ponto único de falha da arquitetura de containers. As VMs do outro lado seguem rodando: o domínio de falha delas é a máquina de cada uma. O watchdog reboota o host em 5s; cada container volta em ~1,5s.",
+ 46:  1 |     WD_COUNT: "<img src=\"/img/watchdog.png\" style=\"height:16px; vertical-align:middle\"> Watchdog ativo: {id} parou de enviar heartbeats. EM GERAL, não se decide por software se um programa vai travar/terminar. O timer não sabe a causa da falha — ele só detecta a ausência de sinal de vida, a resposta prática da indústria ao problema da parada de Turing: travamento não se prova por software, detecta-se por hardware. Reset em {n}s.",
+ 47:  1 |     WD_POST: "✅ {id} de volta após {x}s de boot. Recuperação total (detecção 3s + contagem 5s + boot {x}s) = {t}s sem nenhuma intervenção humana. Em produção, esse número é o MTTR que o watchdog garante de graça.",
+ 48:  1 |     RETURNED: "🔁 Sua tarefa {icone} concluiu após {dur}s: os {mb} MB de memória e o arquivo no disco foram devolvidos ao sistema. Desalocar também é gerenciar recurso — o que não é liberado vira vazamento. Você está de volta à escolha.",
+ 49:  1 |     TECH: "Três domínios de falha: processo (container), máquina (VM) e kernel (host). Quanto menor o domínio, mais leve e mais rápida a recuperação; quanto maior, mais forte o isolamento e maior o preço. O watchdog atua em qualquer um deles: detecta ausência de heartbeat e reseta — 1,5s onde não há SO para carregar, 8s onde há."
+ 50:  0 | };
+ 51:  0 | 
+ 52:  0 | let threadSeq = 0, vmSeq = 0, ctrSeq = 0;
+ 53:  0 | const clients = new Map(); // socket.id -> { mode, os, threadId, machineId, tasks: [], state, lastHb, taskStartedAt, buffer, worker, sandboxFile, wdCd, name }
+ 54:  0 | const machines = new Map(); // id -> { id,type,os,threads:Set,vthreads,state,cd,bootAt,reason,sched:Map }
+ 55:  0 | 
+ 56:  0 | const newMachine = (id, type, os = 'lin') => { const m = { id, type, os, threads: new Set(), vthreads: 0, state: 'running', cd: 0, bootAt: 0, reason: '', sched: new Map() }; machines.set(id, m); return m; };
+ 57:  0 | const host = () => machines.get('HOST-1') || newMachine('HOST-1', 'host');
+ 58:  0 | const nThreads = m => m.threads.size + m.vthreads;
+ 59:  0 | const log = (msg, type = 'info') => io.emit('log', { t: new Date().toLocaleTimeString('pt-BR'), msg, type });
+ 60:  0 | function crash(m, why) { if (!m || m.state !== 'running') return; m.state = 'crashed'; m.cd = WD_DETECT; m.reason = why; log(`💥 ${m.id} CRASHOU (${why}) — ${nThreads(m)} thread(s) caíram`, 'warn'); }
+ 61:  1 | function freeResources(c) {
+ 62:  2 |     if (c.worker) {
+ 63:  2 |         c.worker.postMessage({ type: 'stop' });
+ 64:  2 |         c.worker = null;
+ 65:  1 |     }
+ 66:  2 |     if (c.buffer) {
+ 67:  2 |         c.buffer = null; // Remove a referência
+ 68:  2 |         if (global.gc) global.gc(); // Força coleta se possível (--expose-gc)
+ 69:  1 |     }
+ 70:  2 |     if (c.sandboxFile) {
+ 71:  2 |         fs.unlink(c.sandboxFile).catch(() => {});
+ 72:  2 |         c.sandboxFile = null;
+ 73:  1 |     }
+ 74:  0 | }
+ 75:  0 | 
+ 76:  1 | function leaveMachine(id) {
+ 77:  1 |     const c = clients.get(id); if (!c || !c.machineId) return;
+ 78:  1 |     freeResources(c);
+ 79:  1 |     const m = machines.get(c.machineId);
+ 80:  2 |     if (m) { 
+ 81:  2 |         m.threads.delete(id); m.sched.delete(id); 
+ 82:  2 |         if ((m.type === 'vm' || m.type === 'ctr') && m.id !== 'HOST-1' && nThreads(m) === 0) machines.delete(m.id); 
+ 83:  1 |     }
+ 84:  1 |     c.machineId = null;
+ 85:  1 |     c.mode = null;
+ 86:  1 |     c.tasks = [];
+ 87:  1 |     c.state = 'OCIOSO';
+ 88:  0 | }
+ 89:  0 | 
+ 90:  0 | const HISTORY = 180;
+ 91:  0 | const history = { labels: [], ramDocker: [], ramVm: [], cpuDocker: [], cpuVm: [] };
+ 92:  0 | let lastCpu = process.cpuUsage(), lastTs = Date.now(), realCpu = 0;
+ 93:  0 | let totalSandboxBytes = 0; // Para rastrear uso real de disco
+ 94:  0 | 
+ 95:  0 | // Helpers de diretório para tamanho total
+ 96:  1 | function getDiskUsageSync() {
+ 97:  2 |     try {
+ 98:  2 |         let size = 0;
+ 99:  2 |         const files = fsSync.readdirSync(SANDBOX_DIR);
+100:  3 |         for (const file of files) {
+101:  3 |             size += fsSync.statSync(path.join(SANDBOX_DIR, file)).size;
+102:  2 |         }
+103:  2 |         return size;
+104:  1 |     } catch { return 0; }
+105:  0 | }
+106:  0 | 
+107:  0 | 
+108:  1 | function computeStats(tick) {
+109:  1 |     const now = Date.now();
+110:  2 |     if (tick) {
+111:  2 |         const dt = Math.max(.2, (now - lastTs) / 1000), cu = process.cpuUsage();
+112:  2 |         realCpu = Math.min(100, (((cu.user - lastCpu.user) + (cu.system - lastCpu.system)) / 1e6 / dt) * 100);
+113:  2 |         lastCpu = cu; lastTs = now;
+114:  3 |         for (const m of machines.values()) {
+115:  4 |             if (m.state === 'crashed') {
+116:  4 |                 if (m.cd === WD_DETECT) log(TEXTS.WD_COUNT.replace('{id}', m.id).replace('{n}', m.cd), 'hack');
+117:  4 |                 if (--m.cd <= 0) { m.state = 'booting'; m.bootAt = now + BOOT[m.type]; }
+118:  3 |             }
+119:  4 |             else if (m.state === 'booting' && now >= m.bootAt) { 
+120:  4 |                 m.state = 'running'; 
+121:  4 |                 log(TEXTS.WD_POST.replace('{id}', m.id).replace(/\{x\}/g, (BOOT[m.type] / 1000).toFixed(1)).replace('{t}', (3 + 5 + BOOT[m.type]/1000).toFixed(1)), 'ok'); 
+122:  3 |             }
+123:  3 |             
+124:  3 |             /* escalonador: a cada 1s, cada thread com tarefa ganha fatia ou fila */
+125:  4 |             if (m.state === 'running') {
+126:  5 |                 for (const sid of m.threads) {
+127:  5 |                     const c = clients.get(sid); 
+128:  5 |                     if (!c || !c.tasks || c.tasks.length === 0) continue;
+129:  5 |                     
+130:  5 |                     // Ciclo de vida da thread
+131:  5 |                     const totalDuration = c.tasks.reduce((sum, tid) => sum + (TASKS[tid]?.duration || 0), 0);
+132:  5 |                     const totalRam = c.tasks.reduce((sum, tid) => sum + (TASKS[tid]?.ramMb || 0), 0);
+133:  5 |                     const icons = c.tasks.map(tid => TASKS[tid]?.icon || '').join('');
+134:  5 |                     
+135:  6 |                     if (c.state === 'COM_TAREFA' || c.state === 'PRONTA' || c.state === 'RODANDO') {
+136:  6 |                         // Verifica Heartbeat (apenas se a máquina não estiver recém-bootada/congelada)
+137:  7 |                         if (now - c.lastHb > 3000) {
+138:  7 |                             c.state = 'PARADA';
+139:  7 |                             c.wdCd = WD_DETECT; // Usa o mesmo tempo do watchdog de máquina para a thread (5s)
+140:  7 |                             log(`⚠️ thread #${c.threadId}: heartbeat ausente >3s → PARADA`, 'warn');
+141:  7 |                         } else {
+142:  7 |                             // Verifica Conclusão
+143:  8 |                             if (now - c.taskStartedAt >= totalDuration * 1000) {
+144:  8 |                                 c.state = 'CONCLUÍDA';
+145:  8 |                                 log(`✅ thread #${c.threadId} concluiu as tarefas ${icons} em ${totalDuration}s!`, 'ok');
+146:  8 |                                 leaveMachine(sid);
+147:  8 |                                 const s = io.sockets.sockets.get(sid);
+148:  8 |                                 const msg = TEXTS.RETURNED.replace('{icone}', icons).replace('{dur}', totalDuration).replace('{mb}', totalRam);
+149:  8 |                                 if(s) s.emit('returned', { reason: 'sucesso', msg, env: c.mode });
+150:  8 |                                 continue;
+151:  7 |                             }
+152:  7 | 
+153:  7 |                             // Escalonamento Normal
+154:  7 |                             const isRunning = Math.random() < .7;
+155:  7 |                             m.sched.set(sid, isRunning ? { st: 'running', core: Math.floor(Math.random() * CORES) } : { st: 'ready' });
+156:  7 |                             c.state = isRunning ? 'RODANDO' : 'PRONTA';
+157:  6 |                         }
+158:  6 |                     } else if (c.state === 'PARADA') {
+159:  6 |                         c.wdCd--;
+160:  7 |                         if (c.wdCd <= 0) {
+161:  7 |                             log(`<img src="/img/watchdog.png" style="height:14px; vertical-align:middle"> Watchdog liberou thread #${c.threadId}`, 'hack');
+162:  7 |                             c.state = 'LIBERADA';
+163:  7 |                             leaveMachine(sid);
+164:  7 |                             const s = io.sockets.sockets.get(sid);
+165:  7 |                             if(s) s.emit('returned', { reason: 'parada', msg: 'tarefa parou (sem heartbeat) — watchdog liberou recursos', env: c.mode });
+166:  7 |                             continue;
+167:  6 |                         }
+168:  5 |                     }
+169:  4 |                 }
+170:  4 |             } else {
+171:  4 |                 m.sched.clear();
+172:  5 |                 for (const sid of m.threads) {
+173:  5 |                     const c = clients.get(sid);
+174:  5 |                     if (c) c.lastHb = Date.now();
+175:  4 |                 }
+176:  3 |             }
+177:  2 |         }
+178:  2 |         
+179:  2 |         totalSandboxBytes = getDiskUsageSync();
+180:  1 |     }
+181:  1 | 
+182:  1 |     let ramD = 0, ramV = 0, cpuD = 0, cpuV = 0, dT = 0, vT = 0, idle = 0;
+183:  1 |     for (const c of clients.values()) if (!c.mode) idle++;
+184:  1 |     
+185:  1 |     // Calcula RAM agregada e verifica limite (MAX_ALLOC_MB) se necessário
+186:  1 |     // Por enquanto deixaremos a alocação passar
+187:  1 |     
+188:  1 |     const machinesOut = [];
+189:  1 |     let hostUp = host().state === 'running';
+190:  1 |     
+191:  2 |     for (const m of machines.values()) {
+192:  2 |         if (m.id === 'HOST-1') continue; // HOST-1 invisível, state usado pro kernel panic
+193:  2 |         
+194:  2 |         // Se host caiu, todos os CTRs devem cair.
+195:  3 |         if (m.type === 'ctr' && !hostUp && m.state === 'running') {
+196:  3 |             m.state = 'crashed';
+197:  3 |             m.cd = host().cd;
+198:  3 |             m.reason = 'kernel_panic';
+199:  2 |         }
+200:  2 | 
+201:  2 |         const up = m.state === 'running';
+202:  2 |         const baseRam = m.type === 'host' ? OVERHEAD.host : OS_OVERHEAD[m.type][m.os].ramMb;
+203:  2 |         const baseCpu = m.type === 'host' ? 0 : OS_OVERHEAD[m.type][m.os].cpu;
+204:  2 |         const osName = m.os === 'win' ? 'Janela' : 'Pinguim';
+205:  2 |         
+206:  2 |         const blocks = [{ who: m.type === 'vm' ? `SO convidado (${osName})` : m.type === 'ctr' ? `SO base (${osName})` : 'fatia kernel', ram: baseRam, color: '#4f9d76' }];
+207:  2 |         let ram = baseRam, cpu = baseCpu;
+208:  2 |         
+209:  3 |         for (const sid of m.threads) {
+210:  3 |             const c = clients.get(sid); if (!c || !c.tasks || c.tasks.length === 0) continue;
+211:  3 |             let threadRam = 0;
+212:  3 |             let icons = '';
+213:  4 |             c.tasks.forEach(tid => {
+214:  4 |                 const t = TASKS[tid];
+215:  4 |                 if (t) { ram += t.ramMb; cpu += t.cpu; threadRam += t.ramMb; icons += t.icon; }
+216:  3 |             });
+217:  3 |             const whoName = c.name ? ` (${c.name})` : '';
+218:  3 |             blocks.push({ who: `thread #${c.threadId}${whoName} ${icons}`, ram: threadRam, color: TASKS[c.tasks[0]]?.color || '#ffffff', tid: c.threadId });
+219:  3 |         if (m.vthreads) { ram += m.vthreads * (TASKS.web?.ramMb || 32); cpu += m.vthreads * (TASKS.web?.cpu || 5); blocks.push({ who: `+${m.vthreads} threads virtuais 🌐`, ram: m.vthreads * (TASKS.web?.ramMb || 32), color: '#2b6f52' }); }
+220:  3 |         
+221:  3 |         let isOOM = false;
+222:  3 |         if (m.type === 'vm' && m.os === 'lin' && ram > 256) isOOM = true;
+223:  3 |         if (m.type === 'vm' && m.os === 'win' && ram > 1024) isOOM = true;
+224:  3 |         if (m.type === 'ctr' && m.os === 'lin' && ram > 150) isOOM = true;
+225:  3 |         if (m.type === 'ctr' && m.os === 'win' && ram > 300) isOOM = true;
+226:  3 |         
+227:  4 |         if (isOOM && up) {
+228:  4 |             crash(m, m.type === 'vm' ? 'OOM (Memória Esgotada no SO Convidado)' : 'OOM Killed (Limite do cgroup atingido)');
+229:  4 |             // Expulsa as threads
+230:  4 |             const tids = [...m.threads];
+231:  5 |             tids.forEach(sid => {
+232:  5 |                 const c = clients.get(sid);
+233:  6 |                 if (c) {
+234:  6 |                     const s = io.sockets.sockets.get(sid);
+235:  6 |                     if (s) s.emit('returned', { reason: 'oom', msg: m.type === 'vm' ? 'Sua VM explodiu por falta de memória (Kernel Panic OOM).' : 'Seu processo consumiu mais que o limite do cgroup e foi morto (OOM Killed).', env: c.mode });
+236:  6 |                     leaveMachine(sid);
+237:  5 |                 }
+238:  4 |             });
+239:  3 |         }
+240:  3 |         
+241:  3 |         cpu = Math.min(100, cpu);
+242:  3 |         if (m.type === 'ctr') { dT += nThreads(m); if (up) { ramD += ram; cpuD += cpu; } }
+243:  3 |         else { vT += nThreads(m); if (up) { ramV += ram; cpuV += cpu; } }
+244:  3 |         machinesOut.push({ id: m.id, type: m.type, threads: nThreads(m), state: m.state, cd: m.cd, ram, cpu, blocks, reason: m.reason });
+245:  2 |     }
+246:  2 |     const threadsOut = [];
+247:  3 |     for (const c of clients.values()) if (c.mode && c.tasks && c.tasks.length > 0 && c.machineId) {
+248:  3 |         let sc = null;
+249:  4 |         if (c.machineId) {
+250:  4 |             const m = machines.get(c.machineId);
+251:  4 |             if (m && m.sched) sc = m.sched.get(c.socketId);
+252:  3 |         }
+253:  3 |         let stOut = sc ? sc.st : 'idle';
+254:  3 |         if (c.state === 'PARADA' || c.state === 'LIBERADA') stOut = 'stopped';
+255:  3 |         threadsOut.push({ id: c.threadId, name: c.name ?? null, tasks: c.tasks, machine: c.machineId, st: stOut, core: sc ? sc.core : null, threadState: c.state, wdCd: c.wdCd });
+256:  2 |     }
+257:  3 |     const s = {
+258:  3 |         ts: now, tick,
+259:  3 |         users: { online: clients.size, threads: dT + vT, docker: dT, vm: vT, idle },
+260:  3 |         sim: { ramDocker: Math.round(ramD), ramVm: Math.round(ramV), cpuDocker: +Math.max(0, cpuD).toFixed(1), cpuVm: +Math.max(0, cpuV).toFixed(1) },
+261:  3 |         machines: machinesOut, threads: threadsOut,
+262:  3 |         watchdog: { alert: machinesOut.filter(m => m.state !== 'running').map(m => ({ id: m.id, type: m.type, state: m.state, cd: m.cd, reason: m.reason })) },
+263:  3 |         real: { memMb: Math.round(process.memoryUsage().rss / 1048576), alocMb: Math.round((ramD + ramV) / REAL_SCALE), cpu: +realCpu.toFixed(1), uptime: Math.round(process.uptime()), diskKb: Math.round(totalSandboxBytes / 1024) },
+264:  2 |     };
+265:  3 |     if (tick) {
+266:  3 |         history.labels.push(new Date(now).toLocaleTimeString('pt-BR'));
+267:  3 |         history.ramDocker.push(s.sim.ramDocker); history.ramVm.push(s.sim.ramVm);
+268:  3 |         history.cpuDocker.push(s.sim.cpuDocker); history.cpuVm.push(s.sim.cpuVm);
+269:  3 |         if (history.labels.length > HISTORY) Object.values(history).forEach(a => a.shift());
+270:  2 |     }
+271:  2 |     return s;
+272:  1 | }
+273:  1 | 
+274:  2 | io.on('connection', socket => {
+275:  2 |     const threadId = ++threadSeq;
+276:  2 |     clients.set(socket.id, { mode: null, os: null, threadId, machineId: null, tasks: [], socketId: socket.id, state: 'CONECTADO', lastHb: Date.now(), taskStartedAt: 0, buffer: null, worker: null, sandboxFile: null, wdCd: 0 });
+277:  2 |     socket.emit('boot', { history, threadId, tasks: TASKS, env: { overhead: OS_OVERHEAD, boot: BOOT, cores: CORES, realScale: REAL_SCALE } });
+278:  2 |     log(`🧵 thread #${threadId} conectou (${clients.size} online)`, 'ok');
+279:  2 |     io.emit('stats', computeStats(false));
+280:  2 | 
+281:  3 |     socket.on('set_name', name => {
+282:  3 |         const c = clients.get(socket.id); if (!c) return;
+283:  3 |         c.name = name;
+284:  2 |     });
+285:  2 | 
+286:  3 |     socket.on('choose', data => {
+287:  3 |         const c = clients.get(socket.id); if (!c) return;
+288:  3 |         leaveMachine(socket.id);
+289:  3 |         const { mode, os } = data;
+290:  3 |         const osName = os === 'win' ? 'win' : 'lin';
+291:  3 |         const ov = OS_OVERHEAD[mode === 'vm' ? 'vm' : 'ctr'][osName].ramMb;
+292:  3 |         const currentAloc = Math.round((Array.from(machines.values()).reduce((sum, m) => sum + (m.type === 'host' ? OVERHEAD.host : OS_OVERHEAD[m.type][m.os].ramMb) + (m.vthreads * 32) + Array.from(m.threads).reduce((s, sid) => s + (TASKS[clients.get(sid)?.task]?.ramMb || 0), 0), 0)) / REAL_SCALE);
+293:  4 |         if (currentAloc + (ov / REAL_SCALE) > MAX_ALLOC_MB) {
+294:  4 |             log(`❌ Recusado: Capacidade máxima do servidor atingida. Capacity Planning estourou (Máx ${MAX_ALLOC_MB}MB).`, 'warn');
+295:  4 |             return socket.emit('aviso_personalizado', `Sem capacidade no datacenter (Estouro de MAX_ALLOC_MB = ${MAX_ALLOC_MB}MB). O hardware não aguenta subir essa máquina!`);
+296:  3 |         }
+297:  3 | 
+298:  3 |         c.mode = (mode === 'docker' || mode === 'vm') ? mode : null;
+299:  3 |         c.os = osName;
+300:  3 |         c.state = c.mode ? 'ALOCADO' : 'OCIOSO';
+301:  3 |         if (c.mode === 'docker') { const m = newMachine(`CTR-${String(++ctrSeq).padStart(2, '0')}`, 'ctr', c.os); m.threads.add(socket.id); c.machineId = m.id; }
+302:  3 |         if (c.mode === 'vm') { const m = newMachine(`VM-${String(++vmSeq).padStart(2, '0')}`, 'vm', c.os); m.threads.add(socket.id); c.machineId = m.id; }
+303:  3 |         socket.emit('assign', c.mode ? { threadId: c.threadId, machineId: c.machineId, type: c.mode, tasks: c.tasks, state: c.state, os: c.os } : null);
+304:  3 |         
+305:  3 |         const threadName = c.name ? ` (${c.name})` : '';
+306:  3 |         log(c.mode ? `🧵 thread #${c.threadId}${threadName} alocado → ${c.machineId}` : `🧵 thread #${c.threadId}${threadName} liberado`, c.mode === 'vm' ? 'warn' : 'ok');
+307:  3 |         io.emit('stats', computeStats(false));
+308:  2 |     });
+309:  2 | 
+310:  3 |     socket.on('task', async taskList => {
+311:  3 |         const c = clients.get(socket.id); if (!c) return;
+312:  3 |         if (c.tasks && c.tasks.length > 0) freeResources(c);
+313:  3 |         
+314:  3 |         c.tasks = [];
+315:  4 |         if (Array.isArray(taskList)) {
+316:  5 |             taskList.forEach(tid => {
+317:  5 |                 if (TASKS[tid]) c.tasks.push(tid);
+318:  4 |             });
+319:  4 |         } else if (typeof taskList === 'string' && TASKS[taskList]) {
+320:  4 |             c.tasks.push(taskList);
+321:  3 |         }
+322:  3 |         
+323:  4 |         if (c.tasks.length > 0 && c.machineId) {
+324:  4 |             // Calcula total de RAM solicitada
+325:  4 |             const totalRamRequested = c.tasks.reduce((sum, tid) => sum + TASKS[tid].ramMb, 0);
+326:  4 |             
+327:  4 |             const currentAloc = Math.round((Array.from(machines.values()).reduce((sum, mx) => sum + (mx.type === 'host' ? OVERHEAD.host : OS_OVERHEAD[mx.type][mx.os].ramMb) + (mx.vthreads * 32) + Array.from(mx.threads).reduce((s, sid) => s + (clients.get(sid)?.tasks?.reduce((s2, t2) => s2 + TASKS[t2].ramMb, 0) || 0), 0), 0)) / REAL_SCALE);
+328:  5 |             if (currentAloc + (totalRamRequested / REAL_SCALE) > MAX_ALLOC_MB) {
+329:  5 |                 log(`❌ Tarefa Recusada: Capacidade máxima da simulação estourou. (Máx ${MAX_ALLOC_MB}MB).`, 'warn');
+330:  5 |                 c.tasks = [];
+331:  5 |                 return socket.emit('aviso_personalizado', `O servidor principal já lotou! Memory Leak generalizado ou limite simulado atingido.`);
+332:  4 |             }
+333:  4 | 
+334:  4 |             c.state = 'COM_TAREFA';
+335:  4 |             c.taskStartedAt = Date.now();
+336:  4 |             c.lastHb = Date.now();
+337:  4 |             
+338:  4 |             // 1. Alocar RAM Real
+339:  4 |             const realBytes = Math.floor((totalRamRequested * 1024 * 1024) / REAL_SCALE);
+340:  4 |             c.buffer = Buffer.alloc(realBytes); // Enche de zeros
+341:  4 |             
+342:  4 |             // 2. Alocar Disco Real
+343:  4 |             const filename = path.join(SANDBOX_DIR, `thread-${c.threadId}-${c.tasks.join('-')}.bin`);
+344:  4 |             c.sandboxFile = filename;
+345:  5 |             try {
+346:  5 |                 await fs.writeFile(filename, c.buffer); // Usa o buffer já alocado
+347:  4 |             } catch(e) { console.error('Erro ao escrever arquivo sandbox', e); }
+348:  4 |             
+349:  4 |             // 3. Alocar CPU Worker
+350:  4 |             let totalCpuRequested = c.tasks.reduce((sum, tid) => sum + TASKS[tid].cpu, 0);
+351:  4 |             for(let cx of clients.values()) if (cx.tasks && cx.tasks.length > 0) totalCpuRequested += cx.tasks.reduce((sum, tid) => sum + TASKS[tid].cpu, 0);
+352:  4 |             let duty = c.tasks.reduce((sum, tid) => sum + TASKS[tid].cpu, 0) / 100;
+353:  5 |             if (totalCpuRequested > 200) {
+354:  5 |                 // Escala para baixo se passar do limite de 2 núcleos
+355:  5 |                 duty = duty * (200 / totalCpuRequested);
+356:  4 |             }
+357:  4 |             
+358:  4 |             c.worker = new Worker(path.join(__dirname, 'scripts', 'cpu-worker.js'));
+359:  4 |             c.worker.postMessage({ type: 'start', dutyCycle: duty });
+360:  4 |             
+361:  4 |         } else {
+362:  4 |             c.state = 'ALOCADO';
+363:  4 |             freeResources(c);
+364:  3 |         }
+365:  3 |         
+366:  3 |         socket.emit('assign', c.mode ? { threadId: c.threadId, machineId: c.machineId, type: c.mode, tasks: c.tasks, state: c.state, os: c.os } : null);
+367:  3 |         
+368:  3 |         const threadName = c.name ? ` (${c.name})` : '';
+369:  3 |         const icons = c.tasks.map(tid => TASKS[tid]?.icon || '').join('');
+370:  3 |         const names = c.tasks.map(tid => TASKS[tid]?.name || '').join(', ');
+371:  3 |         const totalRam = c.tasks.reduce((sum, tid) => sum + (TASKS[tid]?.ramMb || 0), 0);
+372:  3 |         log(c.tasks.length > 0 ? `🧵 thread #${c.threadId}${threadName} assumiu tarefas ${icons} ${names} (${totalRam} MB) — escala 1:${REAL_SCALE}` : `🧵 thread #${c.threadId}${threadName} largou a tarefa`, 'ok');
+373:  3 |         io.emit('stats', computeStats(false));
+374:  2 |     });
+375:  2 | 
+376:  3 |     socket.on('sameTask', () => {
+377:  3 |         // Atribui tarefa leve padrão a todas as threads ociosas
+378:  3 |         let assigned = 0;
+379:  4 |         for (const c of clients.values()) {
+380:  5 |             if (c.mode && (!c.tasks || c.tasks.length === 0) && c.machineId) {
+381:  5 |                 c.tasks = ['web'];
+382:  5 |                 c.task = 'web';
+383:  5 |                 c.state = 'COM_TAREFA';
+384:  5 |                 c.taskStartedAt = Date.now();
+385:  5 |                 c.lastHb = Date.now();
+386:  5 |                 const t = TASKS[c.task];
+387:  5 |                 const realBytes = Math.floor((t.ramMb * 1024 * 1024) / REAL_SCALE);
+388:  5 |                 c.buffer = Buffer.alloc(realBytes);
+389:  5 |                 const filename = path.join(SANDBOX_DIR, `thread-${c.threadId}-web.bin`);
+390:  5 |                 c.sandboxFile = filename;
+391:  5 |                 fs.writeFile(filename, c.buffer).catch(()=>{});
+392:  5 |                 let totalCpuRequested = 0;
+393:  5 |                 for(let cx of clients.values()) if (cx.tasks && cx.tasks.length > 0) totalCpuRequested += cx.tasks.reduce((sum, tid) => sum + TASKS[tid].cpu, 0);
+394:  5 |                 let duty = t.cpu / 100;
+395:  5 |                 if (totalCpuRequested > 200) duty = duty * (200 / totalCpuRequested);
+396:  5 |                 c.worker = new Worker(path.join(__dirname, 'scripts', 'cpu-worker.js'));
+397:  5 |                 c.worker.postMessage({ type: 'start', dutyCycle: duty });
+398:  5 |                 io.to(c.socketId).emit('assign', { threadId: c.threadId, machineId: c.machineId, type: c.mode, tasks: c.tasks, state: c.state, os: c.os });
+399:  5 |                 assigned++;
+400:  4 |             }
+401:  3 |         }
+402:  4 |         if (assigned > 0) {
+403:  4 |             log(`[PANEL] ${assigned} threads receberam a mesma tarefa via SAMETASK`, 'hack');
+404:  4 |             io.emit('stats', computeStats(false));
+405:  3 |         }
+406:  2 |     });
+407:  2 | 
+408:  3 |     socket.on('hb', () => {
+409:  3 |         const c = clients.get(socket.id);
+410:  4 |         if (c && c.state !== 'PARADA') {
+411:  4 |             c.lastHb = Date.now();
+412:  4 |             if (c.state === 'OCIOSO') c.state = 'CONECTADO'; // Apenas para debug
+413:  3 |         }
+414:  2 |     });
+415:  2 | 
+416:  3 |     socket.on('disconnect', () => {
+417:  3 |         const c = clients.get(socket.id);
+418:  3 |         leaveMachine(socket.id); clients.delete(socket.id);
+419:  3 |         log(`🧵 thread #${c?.threadId} desconectou (${clients.size} online)`, 'dim');
+420:  3 |         io.emit('stats', computeStats(false));
+421:  2 |     });
+422:  2 | 
+423:  3 |     socket.on('panel:inject', ({ mode, n }) => {
+424:  3 |         n = Math.max(1, Math.min(50, +n || 1));
+425:  4 |         if (mode === 'docker') { 
+426:  5 |             for (let i = 0; i < n; i++) {
+427:  5 |                 const os = Math.random() > 0.5 ? 'win' : 'lin';
+428:  5 |                 const ov = OS_OVERHEAD['ctr'][os].ramMb;
+429:  5 |                 const currentAloc = Math.round((Array.from(machines.values()).reduce((sum, mx) => sum + (mx.type === 'host' ? OVERHEAD.host : OS_OVERHEAD[mx.type][mx.os].ramMb) + (mx.vthreads * 32) + Array.from(mx.threads).reduce((s, sid) => s + (clients.get(sid)?.tasks?.reduce((s2, t2) => s2 + TASKS[t2].ramMb, 0) || 0), 0), 0)) / REAL_SCALE);
+430:  5 |                 if (currentAloc + ((ov + 32) / REAL_SCALE) > MAX_ALLOC_MB) break;
+431:  5 | 
+432:  5 |                 const m = newMachine(`CTR-V${String(++ctrSeq).padStart(2, '0')}`, 'ctr', os); 
+433:  5 |                 m.vthreads = 1;
+434:  4 |             }
+435:  4 |             log(`[PANEL] +${n} containers virtuais`, 'hack'); 
+436:  3 |         }
+437:  4 |         if (mode === 'vm') { 
+438:  5 |             for (let i = 0; i < n; i++) {
+439:  5 |                 const os = Math.random() > 0.5 ? 'win' : 'lin';
+440:  5 |                 const ov = OS_OVERHEAD['vm'][os].ramMb;
+441:  5 |                 const currentAloc = Math.round((Array.from(machines.values()).reduce((sum, mx) => sum + (mx.type === 'host' ? OVERHEAD.host : OS_OVERHEAD[mx.type][mx.os].ramMb) + (mx.vthreads * 32) + Array.from(mx.threads).reduce((s, sid) => s + (clients.get(sid)?.tasks?.reduce((s2, t2) => s2 + TASKS[t2].ramMb, 0) || 0), 0), 0)) / REAL_SCALE);
+442:  5 |                 if (currentAloc + ((ov + 32) / REAL_SCALE) > MAX_ALLOC_MB) break;
+443:  5 | 
+444:  5 |                 const m = newMachine(`VM-V${String(++vmSeq).padStart(2, '0')}`, 'vm', os); 
+445:  5 |                 m.vthreads = 1;
+446:  4 |             }
+447:  4 |             log(`[PANEL] +${n} VMs virtuais`, 'hack'); 
+448:  3 |         }
+449:  3 |         io.emit('stats', computeStats(false));
+450:  2 |     });
+451:  3 |     socket.on('panel:crashCtr', () => {
+452:  3 |         const v = [...machines.values()].filter(m => m.type === 'ctr' && m.state === 'running' && m.id !== 'HOST-1');
+453:  3 |         if (!v.length) return log('[PANEL] nenhum container rodando', 'dim');
+454:  3 |         const target = v[Math.floor(Math.random() * v.length)];
+455:  3 |         crash(target, 'falha no processo');
+456:  3 |         
+457:  3 |         const tid = target.threads.values().next().value;
+458:  3 |         const c = tid ? clients.get(tid) : null;
+459:  3 |         const msg = TEXTS.CRASH_CTR.replace('{id}', target.id).replace('{tid}', c ? c.threadId : '(Virtual)');
+460:  3 |         
+461:  3 |         log(msg, 'hack');
+462:  3 |         io.emit('autopsia', { dropped: target.id, who: c ? c.name || `Thread #${c.threadId}` : 'Bots Virtuais', isolated: 'Isolamento de processo conteve o dano', safe: 'Outros containers', recovery: '1.5s (Reset de Processo)' });
+463:  3 |         io.emit('stats', computeStats(false));
+464:  2 |     });
+465:  2 | 
+466:  3 |     socket.on('panel:crashVm', () => {
+467:  3 |         const v = [...machines.values()].filter(m => m.type === 'vm' && m.state === 'running');
+468:  3 |         if (!v.length) return log('[PANEL] nenhuma VM rodando', 'dim');
+469:  3 |         const target = v[Math.floor(Math.random() * v.length)];
+470:  3 |         
+471:  3 |         io.emit('countdown', { type: 'crashVm', seconds: 3 });
+472:  4 |         setTimeout(() => {
+473:  4 |             crash(target, 'falha no SO convidado');
+474:  4 |             const tid = target.threads.values().next().value;
+475:  4 |             const c = tid ? clients.get(tid) : null;
+476:  4 |             
+477:  4 |             // Avisar Vítima
+478:  4 |             if (c && c.socketId) io.to(c.socketId).emit('aviso_personalizado', TEXTS.CRASH_VM_VICTIM.replace('{id}', target.id));
+479:  4 |             
+480:  4 |             // Avisar vizinhos
+481:  5 |             for (const [sid, client] of clients.entries()) {
+482:  6 |                 if (sid !== (c?c.socketId:null) && client.mode) {
+483:  6 |                     if (client.mode === 'vm') io.to(sid).emit('aviso_personalizado', TEXTS.CRASH_VM_NEIGHBOR_VM.replace('{id}', target.id));
+484:  6 |                     if (client.mode === 'docker') io.to(sid).emit('aviso_personalizado', TEXTS.CRASH_VM_NEIGHBOR_CTR.replace('{id}', target.id));
+485:  5 |                 }
+486:  4 |             }
+487:  4 | 
+488:  4 |             io.emit('autopsia', { dropped: target.id, who: c ? c.name || `Thread #${c.threadId}` : 'Bots Virtuais', isolated: 'Kernel próprio parou a falha', safe: 'Vizinhos VM e CTRs', recovery: '8s (Boot de SO completo)' });
+489:  4 |             io.emit('stats', computeStats(false));
+490:  3 |         }, 3000);
+491:  2 |     });
+492:  2 | 
+493:  3 |     socket.on('panel:crashKernel', () => {
+494:  3 |         log(TEXTS.KERNEL_PANIC, 'hack');
+495:  3 |         host().state = 'crashed'; host().cd = WD_DETECT; host().reason = 'kernel_panic';
+496:  3 |         
+497:  3 |         // Todos os ctr caem juntos
+498:  3 |         const ctrs = [...machines.values()].filter(m => m.type === 'ctr' && m.state === 'running');
+499:  3 |         ctrs.forEach(m => { m.state = 'crashed'; m.cd = WD_DETECT; m.reason = 'kernel_panic'; });
+500:  3 |         
+501:  3 |         io.emit('autopsia', { dropped: 'HOST Kernel', who: 'Todos os containers', isolated: 'VMs têm kernels isolados', safe: 'VMs intactas', recovery: '1.5s (Reset de Kernel Host)' });
+502:  3 |         io.emit('stats', computeStats(false));
+503:  2 |     });
+504:  2 | 
+505:  3 |     socket.on('panel:triggerWatchdog', () => {
+506:  3 |         const running = Array.from(clients.values()).filter(c => c.state === 'COM_TAREFA' || c.state === 'PRONTA' || c.state === 'RODANDO');
+507:  3 |         if (!running.length) return log('[PANEL] nenhuma thread em execução para acionar o watchdog', 'dim');
+508:  3 |         const c = running[Math.floor(Math.random() * running.length)];
+509:  3 |         c.state = 'PARADA';
+510:  3 |         c.wdCd = WD_DETECT; 
+511:  3 |         const threadName = c.name ? ` (${c.name})` : '';
+512:  3 |         log(`[PANEL] <img src="/img/watchdog.png" style="height:14px; vertical-align:middle"> Watchdog acionado manualmente na thread #${c.threadId}${threadName}`, 'hack');
+513:  3 |         io.emit('stats', computeStats(false));
+514:  2 |     });
+515:  2 | 
+516:  3 |     socket.on('panel:chaos', () => {
+517:  3 |         const n = 4 + Math.floor(Math.random() * 5);
+518:  4 |         if (Math.random() > .5) { 
+519:  5 |             for (let i = 0; i < n; i++) {
+520:  5 |                 const os = Math.random() > 0.5 ? 'win' : 'lin';
+521:  5 |                 const m = newMachine(`CTR-V${String(++ctrSeq).padStart(2, '0')}`, 'ctr', os); m.vthreads = 1;
+522:  4 |             }
+523:  4 |             log(`[PANEL] CAOS +${n} containers virtuais`, 'hack'); 
+524:  4 |         } else { 
+525:  5 |             for (let i = 0; i < n; i++) {
+526:  5 |                 const os = Math.random() > 0.5 ? 'win' : 'lin';
+527:  5 |                 const m = newMachine(`VM-V${String(++vmSeq).padStart(2, '0')}`, 'vm', os); m.vthreads = 1;
+528:  4 |             }
+529:  4 |             log(`[PANEL] CAOS +${n} VMs virtuais`, 'hack'); 
+530:  3 |         }
+531:  3 |         io.emit('stats', computeStats(false));
+532:  2 |     });
+533:  3 |     socket.on('panel:reset', () => {
+534:  3 |         for(let c of clients.values()) freeResources(c);
+535:  3 |         machines.clear(); clients.forEach(c => { c.mode = null; c.machineId = null; c.tasks = []; c.state = 'OCIOSO'; });
+536:  3 |         Object.values(history).forEach(a => a.length = 0);
+537:  3 |         
+538:  3 |         // Limpar diretório sandbox
+539:  4 |         fs.readdir(SANDBOX_DIR).then(files => {
+540:  4 |             for (const file of files) fs.unlink(path.join(SANDBOX_DIR, file)).catch(()=>{});
+541:  3 |         });
+542:  3 | 
+543:  3 |         log('[PANEL] RESET', 'hack'); io.emit('assign', null);
+544:  3 |         io.emit('boot', { history }); io.emit('stats', computeStats(false));
+545:  2 |     });
+546:  1 | });
+547:  1 | 
+548:  1 | setInterval(() => io.emit('stats', computeStats(true)), 1000);
+549:  1 | 
+550:  2 | process.on('exit', () => {
+551:  2 |     for (const c of clients.values()) if (c.worker) c.worker.postMessage({ type: 'stop' });
+552:  1 | });
+553:  1 | 
+554:  1 | const PORT = process.env.PORT || 3000;
+555:  1 | server.listen(PORT, () => console.log(`✅ v4 na porta ${PORT} — público / · painel /painel`));

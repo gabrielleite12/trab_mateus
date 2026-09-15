@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>SO://PAINEL v3</title>
+    <link rel="stylesheet" href="/css/terminal.css">
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+
+<body>
+    <div class="crt"></div>
+    <header class="hud">
+        <div class="hud-title" data-text="SO://PAINEL">SO://PAINEL</div>
+        <div class="hud-stats">
+            <span>ONLINE <b id="p-online">0</b></span>
+            <span>THREADS <b id="p-total">0</b></span>
+            <span>CPU-REAL <b id="p-rcpu">0%</b></span>
+            <span>MEM-REAL <b id="p-rmem">0MB</b></span>
+            <span>ALOC-REAL <b id="p-aloc">0MB</b></span>
+            <span>DISK-REAL <b id="p-rdisk">0KB</b></span>
+        </div>
+    </header>
+
+    <section class="box" style="margin:16px">
+        <div class="box-h">&gt; ls /machines --watchdog</div>
+        <div class="wd-row">
+            <div class="wd-dog" id="wd-dog"><img src="/img/watchdog.png" style="height:40px; vertical-align:middle; filter:drop-shadow(0 0 5px var(--magenta));" alt="Watchdog"></div>
+            <div class="wd-txt" id="wd-txt">watchdog: monitorando 0 máquina(s)</div>
+        </div>
+        <div class="map" id="map"></div>
+    </section>
+
+    <section class="box stats-box" style="margin:0 16px 16px">
+        <div class="box-h">&gt; top -n 1 (HOST-1) <span class="tag" style="float:right; margin-right: 10px;">[REAL - SCALE]</span></div>
+        <div class="stats-grid">
+            <div class="sg-item"><span class="sg-label">MEM-REAL:</span> <span class="sg-val" id="p-rmem">0MB</span></div>
+            <div class="sg-item"><span class="sg-label">ALOC-REAL (Buffers):</span> <span class="sg-val" id="p-aloc">0MB</span></div>
+            <div class="sg-item"><span class="sg-label">DISCO-REAL (./sandbox/):</span> <span class="sg-val" id="p-rdisk">0KB</span></div>
+            <div class="sg-item"><span class="sg-label">CPU-REAL (workers):</span> <span class="sg-val" id="p-rcpu">0%</span></div>
+        </div>
+    </section>
+
+    <section class="grid">
+        <div class="side">
+            <article class="card docker">
+                <img class="card-img" src="/img/docker.png" alt="" onerror="this.style.display='none'">
+                <h2>HOST-1 <small>containers · kernel compartilhado</small></h2>
+                <div class="big" id="d-n">0</div>
+                <div class="lbl">threads no container</div>
+                <div class="meter"><span>RAM</span><b id="d-ram">0 MB</b>
+                    <div class="bar"><i id="d-ram-bar" class="cy"></i></div>
+                </div>
+                <div class="meter"><span>CPU</span><b id="d-cpu">0%</b>
+                    <div class="bar"><i id="d-cpu-bar" class="cy"></i></div>
+                </div>
+                <p class="why">kernel panic aqui = <b>todos os threads caem juntos</b> · boot de volta ~1,5s</p>
+            </article>
+            <article class="card vm">
+                <img class="card-img" src="/img/vm.png" alt="" onerror="this.style.display='none'">
+                <h2>VMs <small>1 por thread · kernel próprio</small></h2>
+                <div class="big" id="v-n">0</div>
+                <div class="lbl">threads em VMs</div>
+                <div class="meter"><span>RAM</span><b id="v-ram">0 MB</b>
+                    <div class="bar"><i id="v-ram-bar" class="mg"></i></div>
+                </div>
+                <div class="meter"><span>CPU</span><b id="v-cpu">0%</b>
+                    <div class="bar"><i id="v-cpu-bar" class="mg"></i></div>
+                </div>
+                <p class="why">1 VM crasha = <b>só ela cai</b> · compartilham o pente de RAM, não o destino · boot ~8s
+                </p>
+            </article>
+        </div>
+        <div class="charts">
+            <div class="box">
+                <div class="box-h">&gt; memory.usage --live (mergulho = crash · volta = watchdog) <span class="tag" style="float:right; margin-right: 10px; color: var(--green);">[MODELO DE SALA]</span></div><canvas
+                    id="ramChart"></canvas>
+            </div>
+            <div class="box">
+                <div class="box-h">&gt; cpu.usage --live <span class="tag" style="float:right; margin-right: 10px; color: var(--green);">[MODELO DE SALA]</span></div><canvas id="cpuChart"></canvas>
+            </div>
+        </div>
+    </section>
+
+    <section class="box" style="margin:0 16px 16px; overflow-x: auto;">
+        <div class="box-h">&gt; ps aux --forest (threads ativas em tempo real)</div>
+        <table id="thread-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>TAREFA</th>
+                    <th>AMBIENTE</th>
+                    <th>ESTADO</th>
+                    <th>NÚCLEO</th>
+                    <th>MB REAIS</th>
+                    <th>ARQUIVO (SANDBOX)</th>
+                </tr>
+            </thead>
+            <tbody id="thread-tbody">
+                <tr><td colspan="7" style="text-align:center; color:var(--muted)">Nenhuma thread ativa.</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section class="box console" style="margin:0 16px 16px">
+        <div class="box-h">&gt; tail -f /var/log/so-demo.log</div>
+        <div id="log"></div>
+    </section>
+
+    <section class="box console" style="margin:0 16px 16px; border-color:var(--cyan)">
+        <div class="box-h" style="color:var(--cyan)">&gt; autopsia_report.txt</div>
+        <div id="autopsia-log" style="color:var(--cyan); white-space:pre-wrap; font-size:0.9rem; line-height: 1.5; padding: 10px;">Nenhum crash registrado ainda.</div>
+    </section>
+
+    <nav class="controls">
+        <button data-act="docker" data-info="Injeta 10 containers virtuais (~30 MB + tarefa). Conceito: escalar com leveza — kernel compartilhado.">+10 CONTAINER</button>
+        <button data-act="vm" data-info="Injeta 10 VMs virtuais (500 MB cada). Conceito: escalar com isolamento pesado.">+10 VM</button>
+        <button data-act="crashCtr" data-info="Derruba 1 container. Conceito: isolamento de processo (namespaces) — o dano não propaga e o supervisor de software resolve.">💥 CRASH 1 CONTAINER</button>
+        <button data-act="anomaly" data-info="Simula um processo consumindo recursos desenfreadamente. O Monitor Automático detectará o comportamento estranho e desligará a VM para salvar o host." style="border-color:var(--amber); color:var(--amber)">🦠 INJETAR ANOMALIA</button>
+        <button data-act="chaos" data-info="Cargas aleatórias para salvar a demo se a turma não clicar.">🌀 CAOS</button>
+        <button data-act="reset" data-info="Devolve toda memória e disco ao sistema. Conceito: desalocação de recursos.">RESET</button>
+        <button data-act="table" data-info="Comparativo container × VM para o fechamento.">TABELA [T]</button>
+        <button data-act="script" data-info="Cola cronometrada do apresentador.">ROTEIRO [S]</button>
+        <button data-act="theory" data-info="Conceitos da aula.">TEORIA [C]</button>
+    </nav>
+    <div id="btn-why" style="text-align:center; padding: 10px; color: var(--cyan); font-size: 0.9rem; min-height: 20px;">Passe o mouse sobre um botão para ver o conceito didático...</div>
+
+    <div id="countdown-banner" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:var(--panel); border:2px solid var(--magenta); padding:30px; font-size:2rem; color:var(--magenta); text-align:center; z-index:9999; box-shadow:0 0 30px var(--magenta);">
+        PRÓXIMA VÍTIMA EM... <br><b id="cd-timer" style="font-size:4rem">3</b>
+    </div>
+
+    <div class="overlay" id="ov-table">
+        <div class="ov-box">
+            <div class="box-h">&gt; comparativo.txt <button class="x" data-close>✕ [ESC]</button></div>
+            <table>
+                <tr>
+                    <th>CRITÉRIO</th>
+                    <th class="cy">🐳 CONTAINER</th>
+                    <th class="mg">🖥️ VM</th>
+                </tr>
+                <tr>
+                    <td>o que virtualiza</td>
+                    <td>o sistema operacional</td>
+                    <td>o hardware (hipervisor)</td>
+                </tr>
+                <tr>
+                    <td>kernel</td>
+                    <td>compartilha o do host</td>
+                    <td>próprio por VM</td>
+                </tr>
+                <tr>
+                    <td>boot</td>
+                    <td>~1,5s</td>
+                    <td>~8s (SO completo)</td>
+                </tr>
+                <tr>
+                    <td>memória por thread</td>
+                    <td>dezenas de MB</td>
+                    <td>centenas de MB a GB</td>
+                </tr>
+                <tr>
+                    <td>quem ressuscita quem</td>
+                    <td>supervisor de software<br><span style="font-size:0.7em; color:var(--cyan)">(liveness probe + restart)</span></td>
+                    <td>watchdog virtual<br><span style="font-size:0.7em; color:var(--muted)">(emulado no guest)</span></td>
+                </tr>
+                <tr>
+                    <td>falha de kernel</td>
+                    <td>todos caem juntos</td>
+                    <td>só a VM cai<br><span style="font-size:0.7em; color:var(--muted)">(nuance: num host físico real, a falha do host levaria as VMs também; aqui o domínio modelado para a VM é a própria máquina)</span></td>
+                </tr>
+                <tr>
+                    <td>isolamento</td>
+                    <td>médio</td>
+                    <td>alto</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+
+    <div class="overlay" id="ov-script">
+        <div class="ov-box">
+            <div class="box-h">&gt; cola_do_apresentador.md <button class="x" data-close>✕ [ESC]</button></div>
+            <ol class="script">
+                <li><b>0:00–0:15</b> links no grupo: "cada pessoa = 1 thread; escolham a máquina".</li>
+                <li><b>0:15–0:40</b> gráficos divergem: MB vs GB (escada de memória).</li>
+                <li><b>0:40–1:05</b> 💥 CRASH 1 VM → "só essa morreu; quem estava nela? só você! vizinhas seguem" ·
+                    watchdog reseta em ~8s.</li>
+                <li><b>DERRUBE 1 VM:</b> Alguém tomou tela azul (Kernel Panic). Seus vizinhos não sentiram nada (isolamento pesado). O <i>watchdog virtual</i> reseta em ~8s.</li>
+                <li><b>DERRUBE O KERNEL:</b> A falha do Host paralisa o kernel compartilhado. Todos os containers caem juntos! Único caso em que o <i>watchdog de hardware</i> atua sobre containers, trazendo de volta em ~1,5s.</li>
+                <li><b>1:35–2:00</b> [T] + fecho: "VM compartilha o pente, não o destino; container compartilha o kernel
+                    — e o destino".</li>
+            </ol>
+            <p class="note">Sem cliques? +10 / CAOS. Internet caiu? hotspot local. Tudo caiu? vídeo 60s.</p>
+        </div>
+    </div>
+
+    <div class="overlay" id="ov-theory">
+        <div class="ov-box">
+            <div class="box-h">&gt; conceitos_da_aula.md <button class="x" data-close>✕ [ESC]</button></div>
+            <div style="margin-bottom: 15px;">
+                <h3 style="color:var(--cyan); margin-bottom:5px;">🩺 Supervisor de Software</h3>
+                <p style="font-size: 0.85rem; line-height: 1.5; color:var(--text);">Monitora o <b>liveness probe (heartbeat)</b>. Se uma thread ou processo travar (CPU a 100%) e parar de responder, ele aplica um <i>restart policy</i> para liberar os recursos roubados.</p>
+            </div>
+            <div style="display:flex; gap: 20px; align-items:flex-start; margin-bottom: 15px;">
+                <img src="/img/watchdog.png" alt="" style="width: 80px; filter: drop-shadow(0 0 10px var(--magenta));" onerror="this.style.display='none'">
+                <div>
+                    <h3 style="color:var(--magenta); margin-bottom:5px;"><img src="/img/watchdog.png" style="height:20px; vertical-align:middle; margin-right:5px; filter:drop-shadow(0 0 3px var(--magenta));" alt="Watchdog"> Watchdog (Cão de Guarda)</h3>
+                    <p style="font-size: 0.85rem; line-height: 1.5; color:var(--text);">Temporizador de hardware (ou virtual) que conta regressivamente. Se o SO travar e não resetar o timer, ele estoura e força o <b>reset/reboot da máquina</b> (VM ou Host).</p>
+                </div>
+            </div>
+            <hr style="border:1px solid var(--line); margin: 15px 0;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; font-size: 0.8rem; line-height: 1.4;">
+                <div>
+                    <h4 style="color:var(--cyan)">Escalonador</h4>
+                    <p style="color:var(--muted)">Maestro do SO. Decide quem usa o núcleo do processador e quando. (Thread = Tarefa; no kernel Linux a unidade agendada se chama <i>task</i>).</p>
+                </div>
+                <div>
+                    <h4 style="color:var(--cyan)">Quantum</h4>
+                    <p style="color:var(--muted)">O tempo máximo (fatia) que uma thread pode rodar sem interrupção no núcleo.</p>
+                </div>
+                <div>
+                    <h4 style="color:var(--cyan)">Heartbeat</h4>
+                    <p style="color:var(--muted)">Sinal contínuo que comprova que o processo não está travado.</p>
+                </div>
+                <div>
+                    <h4 style="color:var(--cyan)">Kernel vs Hipervisor</h4>
+                    <p style="color:var(--muted)">Kernel é o núcleo do SO (gerencia hardware); Hipervisor é quem engana o hardware para criar VMs completas. (Tipo 1 = Roda direto no hardware ex. ESXi; Tipo 2 = Roda sobre um SO ex. VirtualBox).</p>
+                </div>
+                <div>
+                    <h4 style="color:var(--cyan)">Interrupções de Hardware</h4>
+                    <p style="color:var(--muted)">Sinal que faz o processador parar o que está fazendo (ex: IRQ 1 = teclado / IRQ 12 = mouse no PC clássico legacy).</p>
+                </div>
+                <div>
+                    <h4 style="color:var(--cyan)">MTTR e Docker Desktop</h4>
+                    <p style="color:var(--muted)">MTTR = Mean Time To Recovery (Tempo de detecção+reset+boot). Docker no Windows/Mac roda sobre uma VM leve (WSL2/HyperKit).</p>
+                </div>
+                <div>
+                    <h4 style="color:var(--cyan)">OverlayFS vs VM</h4>
+                    <p style="color:var(--muted)">Containers reusam imagem/page cache via OverlayFS (leve). VMs duplicam tudo.</p>
+                </div>
+                <div>
+                    <h4 style="color:var(--cyan)">Trits e Quântica</h4>
+                    <p style="color:var(--muted)">Setun (URSS, 1958) usou trits (1 trit ≈ 1,585 bits). "Ternário antes do quântico" é aposta, não consenso. Quântico é coprocessador (como GPU), não substituto total do clássico.</p>
+                </div>
+                <div>
+                    <h4 style="color:var(--cyan)">Hierarquia de Memória (Latências/Custo)</h4>
+                    <p style="color:var(--muted)">L1 ~1ns / RAM ~70-100ns / SSD ~100µs / HD ~5-10ms. Preços: SRAM (cache) caríssima, DRAM (RAM) ~US$/GB, NAND (SSD) centavos.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    </div>
+
+    <div class="overlay" id="ov-nome">
+        <div class="ov-box" style="text-align:center; padding:30px;">
+            <div class="box-h">&gt; autenticação do painel</div>
+            <p style="margin-bottom:15px; color:var(--text)">Bem-vindo ao Painel de Controle! Qual o seu nome (Prof)?</p>
+            <input type="text" id="p-name" placeholder="Ex: Professor Mateus..." class="cyber-input" autocomplete="off" maxlength="15" onkeydown="if(event.key === 'Enter') submitPanelName()">
+            <br>
+            <button type="button" class="cmp-btn" style="margin-top:15px; padding: 10px 24px; font-size:1.1rem" onclick="submitPanelName()">ACESSAR PAINEL</button>
+        </div>
+    </div>
+
+    <script>
+        let presenterName = localStorage.getItem('so_demo_name');
+        
+        function submitPanelName() {
+            const n = $('p-name').value.trim();
+            if (n) {
+                presenterName = n;
+                localStorage.setItem('so_demo_name', n);
+                $('ov-nome').classList.remove('open');
+            }
+        }
+        
+        if (!presenterName) {
+            $('ov-nome').classList.add('open');
+        }
+
+        const socket = io(), $ = id => document.getElementById(id);
+        const fmt = mb => mb >= 1024 ? (mb / 1024).toFixed(1).replace('.', ',') + ' GB' : mb + ' MB';
+        let TASKS = {}, ENV = {};
+        const MAX = 180, L = { labels: [], ramD: [], ramV: [], cpuD: [], cpuV: [] };
+        Chart.defaults.font.family = "'Share Tech Mono', monospace";
+        const glow = { id: 'glow', beforeDatasetDraw(c, a) { const x = c.ctx; x.save(); x.shadowColor = a.meta.dataset.options.borderColor; x.shadowBlur = 12; }, afterDatasetDraw(c) { c.ctx.restore(); } };
+        const lineOpts = maxY => {
+            const y = { beginAtZero: true, ticks: { color: '#4f9d76' } }; if (maxY) y.max = maxY;
+            return { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { labels: { color: '#b8ffd6' } } }, scales: { x: { ticks: { color: '#4f9d76', maxTicksLimit: 6 } }, y } };
+        };
+        const ramChart = new Chart($('ramChart'), {
+            type: 'line', plugins: [glow], data: {
+                labels: L.labels, datasets: [
+                    { label: 'CONTAINER (MB)', data: L.ramD, borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,.15)', fill: true, pointRadius: 0, borderWidth: 2 },
+                    { label: 'VMs (MB)', data: L.ramV, borderColor: '#ff3d81', backgroundColor: 'rgba(255,61,129,.15)', fill: true, pointRadius: 0, borderWidth: 2 }]
+            }, options: lineOpts(null)
+        });
+        const cpuChart = new Chart($('cpuChart'), {
+            type: 'line', plugins: [glow], data: {
+                labels: L.labels, datasets: [
+                    { label: 'CONTAINER (%)', data: L.cpuD, borderColor: '#00e5ff', pointRadius: 0, borderWidth: 2 },
+                    { label: 'VMs (%)', data: L.cpuV, borderColor: '#ff3d81', pointRadius: 0, borderWidth: 2 }]
+            }, options: lineOpts(100)
+        });
+        const bind = () => {
+            ramChart.data.labels = L.labels; ramChart.data.datasets[0].data = L.ramD; ramChart.data.datasets[1].data = L.ramV;
+            cpuChart.data.labels = L.labels; cpuChart.data.datasets[0].data = L.cpuD; cpuChart.data.datasets[1].data = L.cpuV;
+        };
+        socket.on('boot', b => { if(b.tasks) TASKS = b.tasks; if(b.env) ENV = b.env; L.labels = b.history.labels; L.ramD = b.history.ramDocker; L.ramV = b.history.ramVm; L.cpuD = b.history.cpuDocker; L.cpuV = b.history.cpuVm; bind(); ramChart.update('none'); cpuChart.update('none'); });
+        socket.on('stats', s => {
+            $('p-online').textContent = s.users.online; $('p-total').textContent = s.users.threads;
+            $('p-rcpu').textContent = s.real.cpu + '%'; $('p-rmem').textContent = s.real.memMb + 'MB';
+            if (s.real.alocMb !== undefined) $('p-aloc').textContent = s.real.alocMb + 'MB';
+            if (s.real.diskKb !== undefined) $('p-rdisk').textContent = s.real.diskKb >= 1024 ? Math.round(s.real.diskKb/1024) + 'MB' : s.real.diskKb + 'KB';
+            $('d-n').textContent = s.users.docker; $('v-n').textContent = s.users.vm;
+            $('d-ram').textContent = fmt(s.sim.ramDocker); $('v-ram').textContent = fmt(s.sim.ramVm);
+            $('d-cpu').textContent = s.sim.cpuDocker + '%'; $('v-cpu').textContent = s.sim.cpuVm + '%';
+            $('d-ram-bar').style.width = Math.min(100, s.sim.ramDocker / 16384 * 100) + '%';
+            $('v-ram-bar').style.width = Math.min(100, s.sim.ramVm / 16384 * 100) + '%';
+            $('d-cpu-bar').style.width = Math.min(100, s.sim.cpuDocker) + '%';
+            $('v-cpu-bar').style.width = Math.min(100, s.sim.cpuVm) + '%';
+            // mapa de máquinas + watchdog
+            const vms = s.machines.filter(m => m.type === 'vm');
+            const ctrs = s.machines.filter(m => m.type === 'ctr');
+            const hostObj = s.machines.find(m => m.type === 'host');
+
+            const vmHTML = vms.map(m => {
+                const isCrashed = m.state === 'crashed';
+                const stClass = isCrashed ? 'crashed glitch' : (m.state === 'running' ? 'running' : 'booting');
+                const ownerStr = m.owner ? `<b style="color:white">${m.owner}</b>` : 'Anônimo';
+                const anom = m.anomaly ? ' 🦠' : '';
+                return `<div class="dc-machine vm-machine ${stClass}">
+                    <div style="font-weight:bold; color:var(--magenta)">🖥️ VM-${m.id.replace('VM-','')}${anom}</div>
+                    <div style="font-size: 0.8rem; margin-top: 4px; color: var(--text);">Dono: ${ownerStr}</div>
+                    <div style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">Alocado: ${Math.round(m.ramAllocated || 0)} MB</div>
+                    ${isCrashed ? `<div class="crash-overlay">💥 CRASHED</div>` : ''}
+                </div>`;
+            }).join('');
+
+            const ctrHTML = ctrs.map(m => {
+                const isCrashed = m.state === 'crashed';
+                const ownerStr = m.owner ? `<b style="color:white">${m.owner}</b>` : 'Anônimo';
+                return `<div class="dc-machine ctr-machine ${isCrashed ? 'crashed' : ''}">
+                    <div style="font-weight:bold; color:var(--cyan)">🐳 ${m.id}</div>
+                    <div style="font-size: 0.8rem; color: var(--text);">Dono: ${ownerStr}</div>
+                    ${isCrashed ? `<div class="crash-overlay">💥 CRASHED</div>` : ''}
+                </div>`;
+            }).join('');
+
+            const hostCrashed = hostObj && hostObj.state === 'crashed';
+            const hostClass = hostCrashed ? 'crashed glitch' : 'running';
+            const vmPercent = s.vmServer ? (s.vmServer.used / s.vmServer.total * 100) : 0;
+
+            $('map').innerHTML = `
+            <div class="datacenter">
+                <div class="dc-server vm-server">
+                    <div class="dc-header" style="flex-direction:column; align-items:flex-start;">
+                        <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
+                            <h3 style="color:var(--magenta)">🖥️ SERVER-VM (Bare-Metal)</h3>
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <span class="dc-stats">RAM: ${Math.round(s.vmServer?.used || 0)}MB / ${s.vmServer?.total || 16384}MB</span>
+                                <button onclick="socket.emit('panel:crashVm')" style="padding: 4px 8px; font-size: 0.75rem; background: rgba(255,51,51,0.2); border: 1px solid #ff3333; color: white; cursor: pointer; border-radius: 4px;" title="Derruba uma VM. Conceito: isolamento de hardware.">💥 EXPLODIR 1 VM</button>
+                            </div>
+                        </div>
+                        <p style="font-size:0.85rem; color:var(--muted); margin: 5px 0 0 0;">Cada VM exige hardware virtualizado próprio e sequestra a memória do servidor físico. Lota muito rápido, mas garante isolamento extremo de segurança.</p>
+                    </div>
+                    <div class="dc-progress-bg">
+                        <div class="dc-progress-bar" style="width: ${vmPercent}%; background: var(--magenta);"></div>
+                    </div>
+                    <div class="dc-grid">
+                        ${vmHTML || '<div class="dim" style="padding: 10px;">Nenhuma VM alocada no hardware.</div>'}
+                    </div>
+                </div>
+
+                <div class="dc-server ctr-server ${hostClass}">
+                    <div class="dc-header" style="flex-direction:column; align-items:flex-start;">
+                        <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
+                            <h3 style="color:var(--cyan)">🐳 HOST-1 (Linux Compartilhado)</h3>
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <span class="dc-stats">Containers: ${ctrs.length}</span>
+                                <button onclick="socket.emit('panel:crashKernel')" style="padding: 4px 8px; font-size: 0.75rem; background: rgba(255,200,0,0.2); border: 1px solid var(--amber); color: var(--amber); cursor: pointer; border-radius: 4px;" title="Derruba o Kernel do Host. Conceito: Kernel compartilhado cai todos.">☢️ MATAR KERNEL</button>
+                            </div>
+                        </div>
+                        <p style="font-size:0.85rem; color:var(--muted); margin: 5px 0 0 0;">Usa namespaces para isolamento lógico. Super leve, denso e rápido. Mas o calcanhar de Aquiles: se o Kernel do Host explodir, todos caem juntos.</p>
+                    </div>
+                    <div class="dc-grid">
+                        ${ctrHTML || '<div class="dim" style="padding: 10px;">Nenhum container ativo.</div>'}
+                    </div>
+                    ${hostCrashed ? `<div class="crash-overlay" style="font-size:2rem;">☠️ KERNEL PANIC</div>` : ''}
+                </div>
+            </div>`;
+            const a = s.watchdog.alert;
+            $('wd-dog').classList.toggle('alert', a.length > 0);
+            $('wd-txt').textContent = !a.length
+                ? `watchdog: monitorando ${s.machines.length} máquina(s) · heartbeats OK`
+                : a.map(x => x.state === 'crashed' ? `⚠️ ${x.id} SEM HEARTBEAT → reset em ${x.cd}s` : `🔄 ${x.id} rebooting (${x.type === 'vm' ? 'SO completo ~8s' : 'container ~1,5s'})`).join(' · ');
+            if (s.tick) {
+                L.labels.push(new Date(s.ts).toLocaleTimeString('pt-BR')); L.ramD.push(s.sim.ramDocker); L.ramV.push(s.sim.ramVm);
+                L.cpuD.push(s.sim.cpuDocker); L.cpuV.push(s.sim.cpuVm);
+                if (L.labels.length > MAX) { L.labels.shift(); L.ramD.shift(); L.ramV.shift(); L.cpuD.shift(); L.cpuV.shift(); }
+                bind(); ramChart.update('none'); cpuChart.update('none');
+            }
+
+  
+            // Atualizar Tabela de Threads
+            if (s.threads.length > 0) {
+                $('thread-tbody').innerHTML = s.threads.map(t => {
+                    let totalRam = 0;
+                    let icons = '';
+                    let taskNames = [];
+                    if (t.tasks && t.tasks.length > 0) {
+                        t.tasks.forEach(tid => {
+                            if (TASKS[tid]) { totalRam += TASKS[tid].ramMb; icons += TASKS[tid].icon; taskNames.push(TASKS[tid].name); }
+                        });
+                    }
+                    const isVm = t.machine ? t.machine.startsWith('VM') : false;
+                    const realMb = ENV.realScale ? Math.round(totalRam / ENV.realScale) : Math.round(totalRam / 8);
+                    const stColor = t.threadState === 'PARADA' ? 'var(--magenta)' : t.threadState === 'RODANDO' ? 'var(--green-hi)' : 'var(--muted)';
+                    const threadName = t.name ? ` <span style="color:var(--text); font-weight:bold;">(${t.name})</span>` : '';
+                    const taskDisplay = taskNames.length > 0 ? `${icons} <span style="font-size:0.85em; color:var(--text);">${taskNames.join(', ')}</span>` : '<span class="dim">Aguardando...</span>';
+
+                    return `<tr>
+                        <td>#${t.id}${threadName}</td>
+                        <td>${taskDisplay}</td>
+                        <td class="${isVm ? 'mg' : 'cy'}">${t.machine || '<span class="dim">-</span>'}</td>
+                        <td style="color:${stColor}">${t.threadState}</td>
+                        <td>${t.core !== null ? t.core : '-'}</td>
+                        <td>${realMb} MB</td>
+                        <td class="dim">${t.tasks && t.tasks.length ? `thread-${t.id}-${t.tasks.join('-')}.bin` : '-'}</td>
+                    </tr>`;
+                }).join('');
+            } else {
+                $('thread-tbody').innerHTML = '<tr><td colspan="7" style="text-align:center; color:var(--muted)">Nenhuma thread ativa.</td></tr>';
+            }
+        });
+        socket.on('log', e => {
+            const box = $('log'), ln = document.createElement('div'); ln.className = 'ln ' + e.type;
+            ln.innerHTML = `[${e.t}] ${e.msg}`; box.appendChild(ln); while (box.children.length > 60) box.removeChild(box.firstChild); box.scrollTop = box.scrollHeight;
+        });
+        socket.on('countdown', data => {
+            if (data.type === 'crashVm') {
+                $('countdown-banner').style.display = 'block';
+                let s = data.seconds;
+                $('cd-timer').textContent = s;
+                const int = setInterval(() => {
+                    s--;
+                    $('cd-timer').textContent = s;
+                    if (s <= 0) { clearInterval(int); $('countdown-banner').style.display = 'none'; }
+                }, 1000);
+            }
+        });
+        socket.on('autopsia', d => {
+            $('autopsia-log').innerHTML = `<b>O que caiu:</b> ${d.dropped}\n<b>Quem sentiu:</b> ${d.who}\n<b>Por que não propagou:</b> ${d.isolated}\n<b>Quem NÃO sentiu:</b> ${d.safe}\n<b>Recuperação:</b> ${d.recovery}`;
+        });
+        document.querySelectorAll('.controls button').forEach(b => {
+            b.onclick = () => {
+                const a = b.dataset.act;
+                if (a === 'docker') socket.emit('panel:inject', { mode: 'docker', n: 10, presenterName });
+                if (a === 'vm') socket.emit('panel:inject', { mode: 'vm', n: 10, presenterName });
+                if (a === 'crashCtr') socket.emit('panel:crashCtr');
+                if (a === 'crashVm') socket.emit('panel:crashVm');
+                if (a === 'anomaly') socket.emit('panel:anomaly', presenterName);
+                if (a === 'crashKernel') socket.emit('panel:crashKernel');
+                if (a === 'chaos') socket.emit('panel:chaos');
+                if (a === 'reset') socket.emit('panel:reset');
+                if (a === 'table') toggle('ov-table'); if (a === 'script') toggle('ov-script'); if (a === 'theory') toggle('ov-theory');
+            };
+            b.onmouseover = () => { $('btn-why').textContent = b.dataset.info || ''; };
+            b.onmouseout = () => { $('btn-why').textContent = 'Passe o mouse sobre um botão para ver o conceito didático...'; };
+        });
+        const toggle = id => $(id).classList.toggle('open');
+        document.querySelectorAll('[data-close]').forEach(x => x.onclick = e => e.target.closest('.overlay').classList.remove('open'));
+        addEventListener('keydown', e => {
+            if (e.key === 't' || e.key === 'T') toggle('ov-table'); if (e.key === 's' || e.key === 'S') toggle('ov-script'); if (e.key === 'c' || e.key === 'C') toggle('ov-theory');
+            if (e.key === 'Escape') document.querySelectorAll('.overlay.open').forEach(o => o.classList.remove('open'));
+        });
+    </script>
+</body>
+
+</html>

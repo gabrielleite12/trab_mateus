@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="theme-color" content="#030a05">
+    <title>SO://THREAD — sua tarefa, seu ambiente</title>
+    <link rel="stylesheet" href="/css/terminal.css">
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+
+<body>
+    <div class="crt"></div>
+    <header class="hud">
+        <div class="hud-title" data-text="SO://VM-vs-DOCKER">SO://VM-vs-DOCKER</div>
+        <div class="hud-live"><span class="dot"></span><b id="u-total">0</b>&nbsp;THREADS ATIVAS</div>
+    </header>
+    <main class="wrap">
+        <section class="box" id="step-name">
+            <div class="box-h">PASSO 1: IDENTIFICAÇÃO</div>
+            <div style="text-align:center; padding: 20px 0;">
+                <p style="margin-bottom: 15px; color:var(--text)">Bem-vindo! Qual o seu nome?</p>
+                <input type="text" id="i-name" placeholder="Seu nome..." class="cyber-input" autocomplete="off" maxlength="15" onkeydown="if(event.key === 'Enter') submitName()">
+                <br>
+                <button type="button" class="cmp-btn" style="margin-top:15px; padding: 10px 24px; font-size:1.1rem" onclick="submitName()">INICIAR SISTEMA</button>
+            </div>
+        </section>
+
+        <section class="box" id="stepper-box" style="display:none">
+            <div class="stepper">
+                <div class="step on" id="s-conectou">CONECTADO</div>
+                <div class="step" id="s-ambiente">AMBIENTE</div>
+                <div class="step" id="s-sistema">SISTEMA</div>
+                <div class="step" id="s-tarefa">TAREFA</div>
+                <div class="step" id="s-fila">FILA</div>
+                <div class="step" id="s-nucleo">NÚCLEO</div>
+                <div class="step" id="s-heartbeat">HEARTBEAT</div>
+                <div class="step" id="s-fim">FIM</div>
+            </div>
+        </section>
+
+        <section class="box" id="step-env" style="display:none">
+            <div class="box-h">PASSO 2: ESCOLHA SEU AMBIENTE</div>
+            <div class="pick" id="pick-env">
+                <button class="pick-btn docker" id="b-docker" type="button">
+                    <img src="/img/docker.png" alt=""
+                        onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+                    <div class="pick-fallback">🐳</div><span class="pick-name">CONTAINER</span>
+                    <div class="info-block">
+                        <h4 style="color:var(--cyan)">🌐 CONTAINER</h4>
+                        <p>Compartilha o cérebro da máquina (Kernel). Isolado por software. Leve e rápido (1,5s).</p>
+                    </div>
+                </button>
+                <button class="pick-btn vm" id="b-vm" type="button">
+                    <img src="/img/vm.png" alt=""
+                        onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+                    <div class="pick-fallback">🖥️</div><span class="pick-name">VM</span>
+                    <div class="info-block">
+                        <h4 style="color:var(--magenta)">🖥️ VM</h4>
+                        <p>Emula o HARDWARE. Desperdiça recursos roubando memória do Servidor Físico de forma gulosa, mas garante isolamento total (se cair, só cai a sua).</p>
+                    </div>
+                </button>
+            </div>
+            
+            <div class="pick" id="pick-os" style="display:none; margin-top:20px;">
+                <button class="pick-btn" id="b-win" type="button" style="color:var(--amber); border-color:var(--amber)">
+                    <div style="font-size:3rem">🪟</div>
+                    <span class="pick-name" style="color:var(--amber)">JANELA</span>
+                    <div class="info-block" style="color:var(--muted)">
+                        SO pesado. Consome muita CPU e RAM na inicialização.
+                    </div>
+                </button>
+                <button class="pick-btn" id="b-lin" type="button" style="color:var(--cyan); border-color:var(--cyan)">
+                    <div style="font-size:3rem">🐧</div>
+                    <span class="pick-name" style="color:var(--cyan)">PINGUIM</span>
+                    <div class="info-block" style="color:var(--muted)">
+                        SO leve. Consome pouquíssima CPU e RAM.
+                    </div>
+                </button>
+            </div>
+            
+            <div class="status" id="me">[ escolha o ambiente para virar thread… ]</div>
+        </section>
+
+        <section class="box" id="tasks" style="display:none">
+            <div class="box-h">PASSO 3: ESCOLHA SUA TAREFA</div>
+            <div class="tasks" id="task-grid"></div>
+        </section>
+
+        <section class="box" id="card" style="display:none">
+            <div class="box-h">STATUS EM TEMPO REAL</div>
+            <div class="tline" id="t-sched">⏸ escolhendo tarefa…</div>
+            <div class="tline" id="t-aloc" style="display:none; color:var(--magenta); font-weight:bold; margin-top:10px;"></div>
+            <div class="tline" id="t-mem"></div>
+            <div class="mm-bar" id="t-map"></div>
+            <div class="tline" id="t-disk" style="display:none"></div>
+            <div class="tline dim" id="t-note"></div>
+            <div class="tline" id="t-hb" style="margin-top:10px; font-weight:bold; color:var(--cyan)">💓 Heartbeat: <span id="hb-status">ativo</span></div>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
+                <button class="cmp-btn" id="b-cmp" style="flex: 1;">🔁 e se eu estivesse no OUTRO ambiente?</button>
+                <button class="cmp-btn" id="b-term" style="border-color: var(--green); color: var(--green); flex: 1;">💻 ABRIR TERMINAL</button>
+            </div>
+            <div class="cmp" id="cmp" style="display:none"></div>
+            
+            <div id="terminal-box" style="display:none; margin-top:15px; background:#000; border:1px solid #333; padding:10px; font-family:monospace; color:#0f0; height:180px; overflow-y:auto; border-radius:4px; font-size:0.9rem; box-shadow: inset 0 0 10px #000; text-align:left;">
+                <div id="term-out" style="white-space:pre-wrap; margin-bottom:5px; line-height: 1.4;">Seja bem vindo. Digite 'help' para ver os comandos.</div>
+                <div style="display:flex;">
+                    <span id="term-prompt" style="margin-right:8px; color:var(--green)">guest@<span id="term-ip">127.0.0.1</span>:~$</span>
+                    <input type="text" id="term-in" style="background:transparent; border:none; color:#0f0; font-family:monospace; outline:none; flex:1;" autocomplete="off" spellcheck="false">
+                </div>
+            </div>
+        </section>
+
+        <section class="box" id="returned-box" style="display:none; border-color:var(--green)">
+            <div class="box-h" id="returned-cmd" style="color:var(--green)">&gt; ./cleanup.sh</div>
+            
+            <div id="wd-info" style="display:none; margin-bottom: 15px; background: rgba(255, 61, 129, 0.1); padding: 20px; border-radius: 8px; border: 2px dashed var(--magenta); text-align: left;">
+                <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 15px;">
+                    <img src="/img/watchdog.png" alt="Watchdog" style="height: 100px; filter: drop-shadow(0 0 10px var(--magenta));" onerror="this.style.display='none'">
+                    <h3 style="color:var(--magenta); margin: 0; font-size: 1.5rem;">WATCHDOG ATIVADO!</h3>
+                </div>
+                <div style="color:var(--text); font-size:0.95rem; line-height: 1.6;">
+                    <p><b>O QUE É?</b> Um "Cão de Guarda" (Watchdog) é um supervisor de segurança do SO.</p>
+                    <p><b>O QUE ELE FAZ?</b> Fica esperando um "pulso" (Heartbeat) dos programas. Se o programa parar de pulsar, o cão "morde" (mata) para liberar memória.</p>
+                    <p><b>O QUE ACONTECEU AQUI?</b> Sua tarefa exigiu demais da CPU e travou. Sem pulso, o Watchdog te derrubou para salvar o servidor físico!</p>
+                </div>
+            </div>
+
+            <div class="lead" id="returned-msg" style="color:var(--green-hi)"></div>
+            <button class="cmp-btn" id="btn-reload" style="border-color:var(--green); color:var(--green)" onclick="location.reload()">🔁 rodar de novo</button>
+        </section>
+
+        <div id="aviso-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:9999; align-items:center; justify-content:center;">
+            <div style="background:var(--panel); border:2px solid var(--magenta); padding:30px; border-radius:12px; max-width:600px; width:90%; text-align:left; box-shadow: 0 0 40px rgba(255,61,129,0.3);">
+                <div id="aviso-content" style="color:white; font-size:1.05rem; line-height:1.6;"></div>
+                <div style="text-align:center; margin-top:25px;">
+                    <button class="cmp-btn" style="border-color:var(--cyan); color:var(--cyan);" onclick="document.getElementById('aviso-modal').style.display='none'">ENTENDI A EXPLICAÇÃO</button>
+                </div>
+            </div>
+        </div>
+    </main>
+    <script>
+        const socket = io(), $ = id => document.getElementById(id);
+        let myName = null, myMode = null, myOs = null;
+        let myTasks = [];
+        let my = { threadId: null, machineId: null, type: null, tasks: [], threadState: null, name: null };
+        let TASKS = {}, ENV = {};
+        
+        window.submitName = (autoName) => {
+            const n = (typeof autoName === 'string' ? autoName : $('i-name').value).trim();
+            if (n) {
+                myName = n;
+                localStorage.setItem('so_demo_name', n);
+                socket.emit('set_name', myName);
+                $('step-name').style.display = 'none';
+                $('step-env').style.display = 'block';
+                $('stepper-box').style.display = 'block';
+                $('s-conectou').classList.add('on');
+            } else {
+                alert('⚠️ IDENTIFICAÇÃO OBRIGATÓRIA!\nPor favor, digite seu nome de usuário antes de iniciar o sistema.');
+                $('i-name').focus();
+            }
+        };
+
+        $('b-docker').onclick = () => { 
+            $('b-docker').classList.add('on'); 
+            $('b-vm').classList.remove('on'); 
+            myMode = 'docker'; 
+            myOs = 'lin';
+            $('pick-env').style.display = 'none';
+            socket.emit('choose', { mode: myMode, os: myOs }); 
+        };
+        $('b-vm').onclick = () => { 
+            $('b-vm').classList.add('on'); 
+            $('b-docker').classList.remove('on'); 
+            myMode = 'vm'; 
+            showOs(); 
+        };
+
+        function showOs() {
+            $('pick-env').style.display = 'none';
+            $('pick-os').style.display = 'grid';
+            $('me').textContent = '[ escolha o SO para inicializar a máquina… ]';
+            updateStepper();
+        }
+
+        $('b-win').onclick = () => { myOs = 'win'; socket.emit('choose', { mode: myMode, os: myOs }); $('pick-os').style.display = 'none'; };
+        $('b-lin').onclick = () => { myOs = 'lin'; socket.emit('choose', { mode: myMode, os: myOs }); $('pick-os').style.display = 'none'; };
+
+        window.hbInterval = setInterval(() => {
+            if (myMode) socket.emit('hb');
+        }, 1000);
+
+        socket.on('boot', b => { if (b.threadId) my.threadId = b.threadId; if (b.tasks) TASKS = b.tasks; if (b.env) ENV = b.env; buildTasks(); });
+        function buildTasks() {
+            $('task-grid').innerHTML = Object.entries(TASKS).map(([k, t]) =>
+                `<button class="task-btn" data-t="${k}" style="text-align: left; padding: 15px; display: flex; flex-direction: column; gap: 8px;">
+                    <div style="font-size: 1.1em;">${t.icon} <b>${t.name}</b> <span class="t-badge" id="b-${k}" style="display:none; background: var(--magenta); color: white; padding: 2px 6px; border-radius: 4px; float:right;">0</span></div>
+                    <div style="font-size: 0.85em; color: var(--muted); line-height: 1.3; white-space: normal;">${t.desc || ''}</div>
+                    <span style="font-size: 0.9em; margin-top: auto; display: block; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">${t.ramMb} MB · ${t.cpu}% CPU</span>
+                </button>`).join('');
+            document.querySelectorAll('.task-btn').forEach(b => b.onclick = () => {
+                myTasks = [b.dataset.t];
+                renderTaskCounts();
+                submitTasks();
+            });
+        }
+        function renderTaskCounts() {
+            document.querySelectorAll('.t-badge').forEach(b => b.style.display = 'none');
+            let sumRam = 0, sumCpu = 0;
+            const counts = {};
+            myTasks.forEach(t => { counts[t] = (counts[t] || 0) + 1; sumRam += TASKS[t].ramMb; sumCpu += TASKS[t].cpu; });
+            Object.keys(counts).forEach(k => {
+                const badge = $(`b-${k}`);
+                if (badge) { badge.style.display = 'inline-block'; badge.textContent = counts[k]; }
+            });
+            const tSum = $('t-sum');
+            if (tSum) {
+                tSum.textContent = `${sumRam} MB / ${sumCpu}% CPU`;
+                tSum.style.color = sumCpu >= 100 ? 'var(--magenta)' : 'var(--cyan)';
+            }
+        }
+        window.submitTasks = () => {
+            if (myTasks.length === 0) return;
+            socket.emit('task', myTasks);
+        };
+        socket.on('assign', a => {
+            my = a || { threadId: my.threadId, machineId: null, type: null, tasks: [], threadState: 'OCIOSO', ramAllocated: null, ip: null }; 
+            if (a) { myMode = a.type; myOs = a.os; }
+            const alocDiv = $('t-aloc');
+            if (alocDiv) {
+                if (myMode === 'vm' && my.ramAllocated) {
+                    alocDiv.textContent = `💾 VOCÊ SEQUESTROU ${my.ramAllocated} MB DO SERVIDOR FÍSICO | SEU IP: ${my.ip}`;
+                    alocDiv.style.display = 'block';
+                } else if (myMode === 'docker' && my.ip) {
+                    alocDiv.textContent = `SEU IP: ${my.ip}`;
+                    alocDiv.style.display = 'block';
+                } else {
+                    alocDiv.style.display = 'none';
+                }
+            }
+            if (my.ip) $('term-ip').textContent = my.ip;
+            $('b-term').style.display = myOs === 'lin' ? 'block' : 'none';
+            if (myOs !== 'lin') $('terminal-box').style.display = 'none';
+            $('card').style.display = my.machineId ? 'block' : 'none';
+            $('stepper-box').style.display = 'block';
+            $('tasks').style.display = myMode ? 'block' : 'none';
+            
+            // Check CPU freeze
+            let totalCpu = (my.tasks || []).reduce((s,t) => s + (TASKS[t]?.cpu || 0), 0);
+            if (totalCpu >= 100) {
+                document.body.classList.add('glitch');
+                // Pára o envio de hb
+                if (window.hbInterval) clearInterval(window.hbInterval);
+            }
+            
+            updateStepper();
+        });
+        
+        socket.on('returned', data => {
+            $('step-env').style.display = 'none';
+            $('tasks').style.display = 'none';
+            $('card').style.display = 'none';
+            $('stepper-box').style.display = 'block';
+            $('returned-box').style.display = 'block';
+            $('me').innerHTML = 'Sua máquina foi liberada (recursos devolvidos).';
+            
+            if (data.reason === 'parada') {
+                $('returned-box').style.borderColor = 'var(--magenta)';
+                $('returned-msg').style.color = 'var(--magenta)';
+                $('returned-cmd').style.color = 'var(--magenta)';
+                $('returned-cmd').textContent = '> WATCHDOG ATIVADO';
+                $('wd-info').style.display = 'block';
+                $('btn-reload').style.borderColor = 'var(--magenta)';
+                $('btn-reload').style.color = 'var(--magenta)';
+            } else {
+                $('returned-box').style.borderColor = 'var(--green)';
+                $('returned-msg').style.color = 'var(--green-hi)';
+                $('returned-cmd').style.color = 'var(--green)';
+                $('returned-cmd').textContent = '> ./cleanup.sh';
+                $('wd-info').style.display = 'none';
+                $('btn-reload').style.borderColor = 'var(--green)';
+                $('btn-reload').style.color = 'var(--green)';
+            }
+            $('returned-msg').innerHTML = data.msg;
+            my.threadState = 'LIBERADA';
+            myTasks = [];
+            renderTaskCounts();
+            document.body.classList.remove('glitch');
+            if (!window.hbInterval) window.hbInterval = setInterval(() => { if (myMode) socket.emit('hb'); }, 1000);
+            updateStepper();
+        });
+
+        socket.on('aviso_personalizado', msg => {
+            $('aviso-content').innerHTML = msg;
+            $('aviso-modal').style.display = 'flex';
+        });
+
+        const updateStepper = () => {
+            ['s-conectou','s-ambiente','s-sistema','s-tarefa','s-fila','s-nucleo','s-heartbeat','s-fim'].forEach(id => $(id).classList.remove('on'));
+            $('s-conectou').classList.add('on');
+            if (myMode) $('s-ambiente').classList.add('on');
+            if (myOs) $('s-sistema').classList.add('on');
+            if (my.tasks && my.tasks.length > 0) $('s-tarefa').classList.add('on');
+            if (my.threadState === 'PRONTA' || my.threadState === 'RODANDO' || my.threadState === 'PARADA' || my.threadState === 'LIBERADA') $('s-fila').classList.add('on');
+            if (my.threadState === 'RODANDO' || my.threadState === 'PARADA' || my.threadState === 'LIBERADA') $('s-nucleo').classList.add('on');
+            if (my.threadState === 'RODANDO') $('s-heartbeat').classList.add('on');
+            if (my.threadState === 'LIBERADA' || my.threadState === 'CONCLUÍDA') $('s-fim').classList.add('on');
+        };
+
+        $('b-cmp').onclick = () => { const c = $('cmp'); c.style.display = c.style.display === 'none' ? 'block' : 'none'; renderCmp(); };
+        
+        $('b-term').onclick = () => { 
+            const t = $('terminal-box'); 
+            t.style.display = t.style.display === 'none' ? 'block' : 'none'; 
+            if (t.style.display === 'block') $('term-in').focus();
+        };
+
+        const tOut = (msg) => { $('term-out').textContent += msg + '\n'; $('terminal-box').scrollTop = $('terminal-box').scrollHeight; };
+        
+        $('term-in').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const cmd = $('term-in').value.trim();
+                $('term-in').value = '';
+                tOut(`\nguest@${my.ip || '127.0.0.1'}:~$ ${cmd}`);
+                
+                if (!cmd) return;
+                const args = cmd.split(' ');
+                const c = args[0].toLowerCase();
+                
+                if (c === 'help' || c === '?') {
+                    tOut('Comandos disponíveis:\n  ls       Listar arquivos\n  nmap     Descobrir máquinas na rede\n  ddos     <ip> Derrubar alvo\n  sudo     Executar como root (administrador)');
+                } else if (c === 'ls') {
+                    if (myMode === 'docker') {
+                        tOut('app/   config/   nao_abrir.sh');
+                    } else {
+                        tOut('meu_projeto/   notas.txt   nao_abrir.sh');
+                    }
+                } else if (c === './nao_abrir.sh' || cmd === 'bash nao_abrir.sh') {
+                    tOut('bash: ./nao_abrir.sh: Permission denied\n(Você precisa de privilégios de administrador para rodar este arquivo. Tente usar "sudo")');
+                } else if (c === 'sudo') {
+                    if (args[1] === './nao_abrir.sh') {
+                        tOut('[sudo] executando malware como root...\nAcesso total concedido. Analisando ambiente...');
+                        socket.emit('student:malware');
+                    } else {
+                        tOut(`sudo: ${args.slice(1).join(' ')}: command not found`);
+                    }
+                } else if (c === 'nmap') {
+                    if (myMode === 'docker') {
+                        tOut('bash: nmap: command not found\n(Dica Didática: Imagens de Container são mínimas e não vêm com ferramentas pré-instaladas!)');
+                    } else {
+                        tOut('Iniciando Nmap 7.80... Varrendo rede local...');
+                        socket.emit('student:nmap');
+                    }
+                } else if (c === 'ddos') {
+                    const target = args[1];
+                    if (!target) return tOut('Uso: ddos <ip>');
+                    tOut(`Iniciando ataque DDoS contra ${target}...\nEnviando pacotes maliciosos SYN flood...`);
+                    socket.emit('student:ddos', target);
+                } else {
+                    tOut(`bash: ${c}: command not found`);
+                }
+            }
+        });
+
+        socket.on('terminal:nmap_result', ips => {
+            tOut(`\nRelatório de Varredura Nmap:\nHost parece estar UP.\nPortas abertas e Serviços detetados:`);
+            ips.forEach(m => {
+                tOut(`- ${m.ip} [${m.type === 'vm' ? 'MÁQUINA VIRTUAL / Isolamento Nível Hardware' : 'CONTAINER / Isolamento Nível Software'}]`);
+            });
+            tOut(`Nmap concluído: ${ips.length} endereços de IP varridos.`);
+        });
+        
+        socket.on('terminal:log', msg => {
+            tOut(msg);
+        });
+        function renderCmp() {
+            if (!my.tasks || my.tasks.length === 0 || !myOs || !ENV.overhead) return; 
+            const sumRam = my.tasks.reduce((s,t) => s + TASKS[t].ramMb, 0);
+            const vmOv = ENV.overhead.vm[myOs].ramMb;
+            const ctrOv = ENV.overhead.ctr[myOs].ramMb;
+            
+            const row = (lab, vm, dk) => `<tr><td>${lab}</td><td class="mg">${vm}</td><td class="cy">${dk}</td></tr>`;
+            $('cmp').innerHTML = `<table><tr><th>seu tratamento</th><th class="mg">🖥️ na VM</th><th class="cy">🐳 no CONTAINER</th></tr>
+   ${row('custo total das SUAS tarefas', `${sumRam}+${vmOv} = ${sumRam + vmOv} MB`, `${sumRam}+${ctrOv} = ${sumRam + ctrOv} MB`)}
+   ${row('tempo da máquina subir (boot)', `${ENV.boot.vm/1000}s`, `${ENV.boot.ctr/1000}s`)}
+   ${row('isolamento', 'kernel próprio (pesado)', 'kernel do host (leve)')}
+   ${row('kernel panic derruba…', 'só você', 'todo mundo junto')}
+   </table><p class="note">mesma tarefa, dois tratamentos: o ambiente muda o preço e o destino.</p>`;
+        }
+        socket.on('stats', s => {
+            $('u-total').textContent = s.users.threads;
+            if (!my.machineId) return;
+            const m = s.machines.find(x => x.id === my.machineId), t = s.threads.find(x => x.id === my.threadId);
+            
+            if (t) my.threadState = t.threadState;
+            updateStepper();
+            
+            if (!m) return;
+            
+            const c = t || my;
+            const threadName = c.name ? ` (${c.name})` : (myName ? ` (${myName})` : '');
+            const osDesc = myOs === 'win' ? 'Janela' : 'Pinguim';
+            $('me').innerHTML = m.state === 'running'
+                ? (my.type === 'vm' ? `🧵 thread #${my.threadId}${threadName} em ${m.id} 🟢 (VM com ${osDesc})` : `🧵 thread #${my.threadId}${threadName} em ${m.id} 🟢 (Container com ${osDesc})`)
+                : m.state === 'crashed' ? `💥 ${m.id} CRASHOU (${m.reason}) — watchdog em ${m.cd}s…` : `🔄 ${m.id} rebooting…`;
+            $('me').className = 'status ' + my.type;
+            const myTh = s.threads.find(x => x.id === my.threadId);
+            const myCore = myTh && myTh.core !== null ? myTh.core : '?';
+            
+            $('t-sched').innerHTML = !my.tasks || my.tasks.length === 0 ? '⏸ Aguardando você escolher uma tarefa...'
+                : my.threadState === 'PRONTA' ? '⏸ <b style="color:var(--amber)">FILA DO ESCALONADOR</b>: Aguardando a CPU liberar espaço...'
+                : my.threadState === 'RODANDO' ? `▶️ <b style="color:var(--green-hi)">PROCESSANDO</b>: Thread alocada no núcleo físico ${myCore}.`
+                : my.threadState === 'PARADA' ? '❌ <b style="color:var(--magenta)">TRAVOU!</b> O processo congelou e o supervisor (Watchdog) vai agir.'
+                : '✅ <b style="color:var(--cyan)">FINALIZADO</b>: Recursos devolvidos ao sistema.';
+            
+            if (t && t.threadState === 'PARADA') {
+                $('hb-status').textContent = `falhou! Watchdog <span class="help-wrap">?<span class="help-tip">Monitor que reseta se não houver pulso.</span></span> liberando em ${t.wdCd}s`;
+                $('hb-status').style.color = 'var(--magenta)';
+            } else {
+                $('hb-status').textContent = 'ativo e batendo';
+                $('hb-status').style.color = 'var(--cyan)';
+            }
+
+            const tk = my.task ? TASKS[my.task] : null;
+            $('t-mem').innerHTML = tk ? `💾 seu bloco na RAM: ${tk.icon} ${tk.name} = ${Math.round(tk.ramMb / ENV.realScale)} MB reais alocados em ${m.id} (escala 1:${ENV.realScale})` : '💾 sem tarefa = sem bloco de memória';
+            $('t-map').innerHTML = (m.blocks || []).map(b => `<i style="width:${Math.min(100, b.ram / 2048 * 100)}%;background:${b.color};${b.tid === my.threadId ? 'outline:2px solid #fff' : ''}" title="${b.who} · ${b.ram} MB"></i>`).join('');
+            
+            if (tk) {
+                $('t-disk').style.display = 'block';
+                $('t-disk').innerHTML = `💽 arquivo no disco: <span style="color:var(--text)">./sandbox/thread-${my.threadId}-${my.task}.bin</span> (${Math.round(tk.ramMb / ENV.realScale)} MB reais)`;
+            } else {
+                $('t-disk').style.display = 'none';
+            }
+
+            $('t-note').innerHTML = my.type === 'vm'
+                ? '🖥️ <b>VM:</b> O isolamento é total. Se o vizinho travar, você não sente. Mas você paga mais caro em memória.'
+                : '🐳 <b>CONTAINER:</b> Você é super leve. Mas se o hospedeiro (HOST-1) falhar, todos os containers caem juntos.';
+            if ($('cmp').style.display !== 'none') renderCmp();
+        });
+        const pre = new URLSearchParams(location.search).get('escolha');
+        if (pre === 'docker' || pre === 'vm') pick(pre);
+
+        // Auto-login pelo localStorage
+        const savedName = localStorage.getItem('so_demo_name');
+        if (savedName) {
+            submitName(savedName);
+        }
+    </script>
+</body>
+
+</html>
