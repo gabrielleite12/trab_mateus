@@ -1,38 +1,43 @@
-# SO://VM-vs-DOCKER
+# 🖥️ SO: Máquinas Virtuais vs Docker
 
-Uma demonstração educacional interativa de Sistemas Operacionais (foco em virtualização vs conteinerização). Projetada para professores exibirem em sala de aula (no telão) enquanto os alunos interagem simultaneamente pelo celular.
+Uma demonstração educacional interativa de Sistemas Operacionais! 
 
-## Tabela de Gabarito Conceitual (Auditoria V8)
+Este projeto foi projetado para professores exibirem no telão da sala de aula. Enquanto a simulação roda no telão (servidor), os alunos podem acessar pelo próprio celular para interagir em tempo real, enviando tarefas e visualizando conceitos de **virtualização** e **conteinerização** na prática.
 
-| AFIRMAÇÃO | VEREDITO | ONDE APARECE | CONTEXTO (MODELO/REAL) |
-| :--- | :--- | :--- | :--- |
-| **Container compartilha o kernel do host, limitando recursos com cgroups e namespaces** | VERDADEIRO | `index.html` (dicas de escolha) e `painel.html` (tabela e teoria) | Real |
-| **1 container morrendo derruba só ele** | VERDADEIRO | `server.js` (CRASH_CTR) | Real |
-| **KERNEL PANIC no host derruba TODOS os containers (Ponto único de falha)** | VERDADEIRO | `server.js` (KERNEL_PANIC) e Painel (Autópsia) | Real |
-| **1 VM morrendo derruba só ela** | VERDADEIRO (com ressalva) | `server.js` (CRASH_VM) | Modelo (Nuance: no host físico real a falha do host derrubaria as VMs também. Na simulação, o domínio de falha modelado da VM é só ela mesma, isolando a falha). |
-| **Watchdog previne travamento de software antes de acontecer** | FALSO | `server.js` (WD_COUNT) | Real (Ele atua como resposta pragmática da indústria à impossibilidade de decidir parada de Turing; ele detecta via hardware a falta do pulso e *reage* com reset forçado, não previne.) |
-| **Escalonador decide tarefas em fatias chamadas Quantum** | VERDADEIRO | `painel.html` (Overlay de Teoria) | Real (A unidade de processamento no Kernel Linux se chama *task*). |
-| **IRQ 1 = Teclado / IRQ 12 = Mouse** | VERDADEIRO | `painel.html` (Overlay de Teoria) | Real (Arquitetura Clássica / Legacy do PC IBM) |
-| **Docker no Windows roda nativamente** | FALSO | `painel.html` (Overlay de Teoria) | Real (O Docker Desktop para Mac e Windows cria silenciosamente uma VM leve, tipo WSL2 ou HyperKit, para prover o kernel Linux) |
-| **Hierarquia de Memória e Custos: SRAM é barata** | FALSO | `painel.html` (Overlay de Teoria) | Real (L1/SRAM ~1ns e caríssima; DRAM ~70ns e barata/GB; SSD NAND ~100µs e muito barata) |
-| **Trits são a base da computação quântica** | FALSO | `painel.html` (Overlay de Teoria) | Real (Computação base 3 "Trits" existiu na URSS com o Setun, 1958, mas não é quântica. O quântico age como coprocessador orquestrado pelo SO clássico) |
-| **OverlayFS copia toda a imagem a cada novo container** | FALSO | `painel.html` (Overlay de Teoria) | Real (Containers reusam o *page cache* e camadas de imagem. VMs duplicam tudo, gerando overhead massivo) |
+## 🚀 Como Executar
 
-## Como Testar a Estabilidade (Capacity Planning & Loadtest)
+### Opção 1: Via Windows (Mais fácil)
+Basta dar dois cliques no arquivo `iniciar.bat`. O sistema irá baixar as dependências e abrir uma porta local automaticamente.
 
-O sistema conta com um limitador rígido de `MAX_ALLOC_MB` para simular "Memory Leak Generalizado" ou limite do servidor. O limite é por padrão de 900MB.
+### Opção 2: Via Terminal (Linux/Mac)
+1. Instale as dependências: `npm install`
+2. Inicie o servidor: `npm start`
+3. Abra no navegador: `http://localhost:3000`
 
-### 1. Teste de Carga de Tráfego:
-1. Abra um terminal e inicie o backend: `node --expose-gc server.js`
-2. Em outro terminal, inicie o stress: `node scripts/loadtest.js` (Simula 20 bots acessando o servidor publicamente ao mesmo tempo).
-3. Abra `http://localhost:3000/painel` e veja os bots serem processados, ganhando tarefas (`web`, `compilar`, etc.). O painel **não deve** exibir erros, e os heartbeats devem ser reportados na grade `[MODELO DE SALA]`.
+---
 
-### 2. Teste de Injeção & CAOS (Capacity Planning)
-1. No painel, comece a ejetar VMs (+10) pelo botão de atalho.
-2. Observe que cada VM pesa centenas de MB na carga da Sala. Eventualmente o servidor estourará e apresentará a mensagem visual `❌ Tarefa Recusada: Capacidade máxima da simulação estourou`.
-3. Isso testa a robustez do backend e a capacidade de segurar vazamentos via limites explícitos de `REAL_SCALE`.
+## 📚 Gabarito Conceitual para Professores: "E no outro ambiente?"
 
-### 3. Teste de Watchdog Automático (Recuperação)
-1. Com uma VM rodando, injete uma falha clicando em "💀 VM (Convidado)".
-2. A vítima receberá uma tela vermelha no celular (`index.html`). O painel inicia contagem do Watchdog (5s).
-3. Após o tempo, o Watchdog executa o Reset de Hardware Virtual e o container reinicia sozinho ("Boot em 8s"). A tela da vítima voltará ao ar, registrando o `MTTR` didático. A tela de "Autópsia" registrará que o vizinho não sofreu nenhum dano graças à conteinerização.
+Aqui detalhamos as principais diferenças e o "porquê" de cada comportamento quando comparamos Containers vs Máquinas Virtuais:
+
+### 1. "Container compartilha o kernel do host, limitando recursos com cgroups e namespaces"
+* **Veredito:** VERDADEIRO
+* **E no outro ambiente (VM)?** Falso. Uma Máquina Virtual roda o seu PRÓPRIO kernel isolado.
+* **O porquê da diferença:** Conteinerização é uma virtualização a *nível de sistema operacional* (compartilha o Kernel base para ser extremamente leve e rápido). VMs utilizam virtualização a *nível de hardware* (via Hypervisor), onde cada VM precisa dar boot em um Sistema Operacional completo inteiro, o que consome muita memória e tempo.
+
+### 2. "1 container/VM morrendo derruba só ele mesmo"
+* **Veredito:** VERDADEIRO (Para ambos)
+* **O porquê da diferença:** Ambos oferecem isolamento contra falhas de aplicação. Um app crashando no Docker não afeta os vizinhos. Na VM também não. A diferença é que a VM oferece uma barreira mais forte e pesada, enquanto o Docker oferece uma barreira ágil baseada em processos.
+
+### 3. "KERNEL PANIC no host derruba TODOS os containers"
+* **Veredito:** VERDADEIRO
+* **E no outro ambiente (VM)?** Se o Host físico sofrer KERNEL PANIC, todas as VMs caem também. **Mas**, um KERNEL PANIC *dentro do SO convidado (Guest)* afeta apenas aquela VM. Um KERNEL PANIC *dentro* do container não existe (pois ele não tem kernel próprio).
+* **O porquê da diferença:** Como todos os containers compartilham o Kernel do Host físico, o Host físico se torna o "Ponto Único de Falha" do SO. Se o Kernel hospedeiro quebrar, nenhum container sobrevive. Na VM, como cada uma tem seu SO independente, uma falha crítica de driver ou Kernel dentro da VM #1 não vaza para a VM #2.
+
+### 4. "Docker no Windows ou Mac roda nativamente"
+* **Veredito:** FALSO
+* **E no outro ambiente (Linux)?** Verdadeiro, roda de forma 100% nativa.
+* **O porquê da diferença:** O motor do Docker baseia-se em recursos exclusivos e primitivos do Kernel Linux (`cgroups` e `namespaces`). O Windows e o macOS possuem seus próprios Kernels incompatíveis. Por isso, ao instalar o Docker Desktop no Windows, ele precisa iniciar silenciosamente uma Máquina Virtual leve nos bastidores (como o **WSL2** ou Hyper-V) apenas para rodar um Kernel Linux invisível e, dentro dele, rodar os seus containers.
+
+---
+*(Nota: Para testes de estresse e capacity planning em sala, o servidor backend deste projeto possui um limite fixo de memória (ex: 900MB) para estourar propositalmente e demonstrar gargalos de hardware para a turma).*
